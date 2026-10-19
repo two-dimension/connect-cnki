@@ -51,6 +51,14 @@ uv run cnki-mcp --config config.local.json
 
 厦大档案中的机构标签选择器留空，避免用猜测规则把登录成功误报为机构识别成功。查询条件或排序控件未核验时返回 `UNSUPPORTED_*`，不会悄悄丢弃条件。入口页面变化返回 `SOURCE_LAYOUT_CHANGED`；频繁访问提示会暂停会话。
 
+如需在接入 Codex 前确认真实浏览器状态，可以运行：
+
+```powershell
+uv run cnki-mcp --config config.local.json --access-check xmu
+```
+
+它打开可见专用窗口，等待用户亲自处理网站安全验证；在终端输入 `verify` 核验机构、`inspect` 查看脱敏诊断、`close` 结束。诊断使用独立数据子目录，不影响已运行 MCP 的任务，不提交文献检索或下载；只列出主机和预期学校名的结构候选，不输出完整 URL、登录 DOM、密码或身份断言。候选节点必须由维护者确认其机构组件含义，不能自动作为认证成功依据。CARSI 可使用 `--mode carsi`。
+
 ## 无需在线接入的本地流程
 
 将合法取得的 RIS、BibTeX、CSL JSON、JSON 题录或 PDF 放入 `imports/`（该目录不进 Git）。可在本地配置 `import_roots` 加入其他明确选择的目录。路径解析会阻止目录穿越和指向允许目录外的链接。

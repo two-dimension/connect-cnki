@@ -69,5 +69,58 @@ async def test_real_browser_synthetic_search_pagination_and_identity(app):
         challenge = await app.verify_access_session(sid)
         assert challenge["data"]["error_code"] == "USER_INTERACTION_REQUIRED"
         assert challenge["data"]["state"] == "waiting_for_user"
+        diagnostic = await app.access.inspect(sid)
+        assert diagnostic["pages"][0]["kind"] == "human_verification"
+        assert not diagnostic["identity_verified"]
+        await page.evaluate("document.title = 'Fixture provider'")
+        await page.locator(".institution").evaluate("element => element.textContent = '厦门大学'")
+        profile.selectors.institution_label = ""
+        diagnostic = await app.access.inspect(sid)
+        assert diagnostic["pages"][0]["institution_candidates"][0]["selector_candidates"] == ["div.institution"]
+        assert not diagnostic["identity_verified"]  # A diagnostic never marks an arbitrary matching body label ready.
+        # Login DOM, query assertions and password values never enter the diagnostic.
+        await page.set_content('<input type="password" value="PRIVATE_PASSWORD"><div class="institution">厦门大学</div>')
+        diagnostic = await app.access.inspect(sid)
+        assert diagnostic["pages"][0]["kind"] == "authentication"
+        assert not diagnostic["pages"][0]["institution_candidates"]
+        assert "PRIVATE_PASSWORD" not in str(diagnostic)
+        idp = await context.new_page()
+        await idp.goto("https://fixture.example/SAML/callback?SAMLResponse=PRIVATE_ASSERTION")
+        diagnostic = await app.access.inspect(sid)
+        assert diagnostic["pages"][1]["kind"] == "authentication"
+        assert "PRIVATE_ASSERTION" not in str(diagnostic)
+        await page.close()
+        await idp.close()
+        missing = await app.verify_access_session(sid)
+        assert missing["data"]["state"] == "expired"
+        assert missing["data"]["error_code"] == "BROWSER_SESSION_UNAVAILABLE"
         await browser.close()
         app.access.contexts.clear()
+
+
+@pytest.mark.browser
+async def test_browser_upgrades_solved_challenge_return_without_http_egress(app):
+    profile = Institution(institution_id="fixture", display_names=["Fixture"],
+        allowed_hosts=["fixture.example"], provider_hosts=["fixture.example"],
+        search_url="https://fixture.example/kns8s/")
+    received = []
+    async with async_playwright() as playwright:
+        options = {"headless": True}
+        if os.environ.get("CNKI_TEST_BROWSER_CHANNEL"):
+            options["channel"] = os.environ["CNKI_TEST_BROWSER_CHANNEL"]
+        browser = await playwright.chromium.launch(**options)
+        context = await browser.new_context()
+
+        async def server_fixture(route):
+            received.append(route.request.url)
+            await route.fulfill(status=200, content_type="text/html", body="<p>Synthetic return completed</p>")
+
+        await context.route("**/*", server_fixture)
+        await context.route("**/*", lambda route: app.access.route_request("fixture_session", profile, route))
+        page = await context.new_page()
+        await page.goto("http://fixture.example/kns8s/?captchaId=PRIVATE_TEST_NONCE&encoded=a%2Fb%3D", wait_until="domcontentloaded")
+        await page.wait_for_url("https://fixture.example/**", wait_until="domcontentloaded")
+        assert received == ["https://fixture.example/kns8s/?captchaId=PRIVATE_TEST_NONCE&encoded=a%2Fb%3D"]
+        assert app.access.https_upgrades["fixture_session"] == 1
+        assert "fixture_session" not in app.access.blocked
+        await browser.close()

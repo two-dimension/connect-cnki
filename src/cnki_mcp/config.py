@@ -162,6 +162,32 @@ def validate_url(url: str, allowed_hosts: list[str]) -> str:
     return url
 
 
+def provider_https_upgrade(url: str, profile: Institution, method: str) -> str | None:
+    """Canonicalize a provider's plain-HTTP GET return without sending it on the wire.
+
+    CNKI can return from its human challenge to the configured KNS search path using
+    HTTP. Only that known provider/path is eligible. IdP, non-GET, foreign hosts and
+    nonstandard ports remain blocked. Opaque query bytes stay in the browser only.
+    """
+    try:
+        parts = urlsplit(url)
+        if (parts.scheme != "http" or parts.hostname not in profile.provider_hosts
+                or method != "GET" or parts.port not in (None, 80)
+                or parts.username or parts.password):
+            return None
+        entries = [profile.search_url, profile.entry_urls.get("institution_network", "")]
+        for entry in entries:
+            configured = urlsplit(entry)
+            base = configured.path.rstrip("/") or "/"
+            same_path = parts.path.rstrip("/") == base.rstrip("/") or parts.path.startswith(base.rstrip("/") + "/")
+            if configured.hostname == parts.hostname and same_path:
+                upgraded = urlunsplit(("https", parts.hostname, parts.path, parts.query, parts.fragment))
+                return validate_url(upgraded, profile.allowed_hosts)
+    except (ValueError, AppError):
+        return None
+    return None
+
+
 def public_url(url: str | None) -> str | None:
     """Only retain stable bibliographic identifiers, never callbacks or credentials."""
     if not url:

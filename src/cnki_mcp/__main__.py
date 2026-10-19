@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import sys
@@ -11,7 +12,10 @@ from .config import Settings
 def main():
     parser = argparse.ArgumentParser(description="CNKI literature MCP (local stdio)")
     parser.add_argument("--config", help="本地 JSON 配置路径，也可使用 CNKI_MCP_CONFIG")
-    parser.add_argument("--check", action="store_true", help="校验配置并报告能力，不启动浏览器或联网")
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument("--check", action="store_true", help="校验配置并报告能力，不启动浏览器或联网")
+    action.add_argument("--access-check", metavar="INSTITUTION_ID", help="在可见专用浏览器中人工核验接入，不执行检索")
+    parser.add_argument("--mode", choices=["institution_network", "carsi"], default="institution_network")
     arguments = parser.parse_args()
     try:
         settings = Settings.load(arguments.config)
@@ -29,6 +33,11 @@ def main():
     if settings.browser_channel == "chromium":
         os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(settings.data_dir / "browsers"))
     try:
+        if arguments.access_check:
+            from .access_check import run_access_check
+
+            asyncio.run(run_access_check(settings, arguments.access_check, arguments.mode))
+            return
         create_server(settings).run(transport="stdio")
     except AppError as error:
         print(f"{error.code}: {error.message} {error.action}", file=sys.stderr)

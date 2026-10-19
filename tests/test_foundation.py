@@ -2,7 +2,15 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from cnki_mcp.config import ClientProfile, Institution, PolicyRecord, Settings, public_url, validate_url
+from cnki_mcp.config import (
+    ClientProfile,
+    Institution,
+    PolicyRecord,
+    Settings,
+    provider_https_upgrade,
+    public_url,
+    validate_url,
+)
 from cnki_mcp.core import AppError, Store
 from cnki_mcp.library import Library
 from cnki_mcp.models import PaperInput
@@ -17,6 +25,22 @@ def test_url_boundaries():
     assert public_url("https://kns.cnki.net/detail?filename=ABC&token=SECRET&SAMLResponse=SECRET#x") == (
         "https://kns.cnki.net/detail?filename=ABC"
     )
+
+
+def test_human_challenge_return_upgrades_only_known_provider_search_paths():
+    profile = Institution(institution_id="fixture", display_names=["Fixture"],
+        allowed_hosts=["kns.cnki.net", "idp.fixture.example"], provider_hosts=["kns.cnki.net"],
+        search_url="https://kns.cnki.net/kns8s/")
+    original = "http://kns.cnki.net/kns8s/?captchaId=PRIVATE_TEST_NONCE&other=a%2Fb%3D"
+    assert provider_https_upgrade(original, profile, "GET") == original.replace("http:", "https:", 1)
+    assert provider_https_upgrade("http://kns.cnki.net:80/kns8s/", profile, "GET") == "https://kns.cnki.net/kns8s/"
+    for url, method in (
+        (original, "POST"), (original, "HEAD"), ("http://kns.cnki.net:8080/kns8s/", "GET"),
+        ("http://kns.cnki.net.evil.example/kns8s/", "GET"), ("http://idp.fixture.example/login", "GET"),
+        ("http://kns.cnki.net/Shibboleth.sso/Login", "GET"), ("http://u:p@kns.cnki.net/kns8s/", "GET"),
+        ("http://kns.cnki.net/kns8s-evil/", "GET"),
+    ):
+        assert provider_https_upgrade(url, profile, method) is None
 
 
 def test_gate_unknown_denied_expired_and_provider_scope(tmp_path):

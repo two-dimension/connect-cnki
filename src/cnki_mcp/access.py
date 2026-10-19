@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import html
+import re
 from contextlib import asynccontextmanager
 from urllib.parse import urlsplit
 
-from .config import Institution, Settings, validate_url
+from .config import Institution, Settings, provider_https_upgrade, validate_url
 from .core import AppError, Store, now, require
 
 
@@ -18,6 +20,8 @@ class BrowserAccess:
         self.contexts: dict = {}
         self.locks: dict[str, asyncio.Lock] = {}
         self.blocked: set[str] = set()
+        self.blocked_hosts: dict[str, dict[str, set[str]]] = {}
+        self.https_upgrades: dict[str, int] = {}
         self.query_pages: dict[str, object] = {}
 
     async def start(self, institution_id: str, mode: str) -> dict:
@@ -42,16 +46,10 @@ class BrowserAccess:
             context.set_default_timeout(self.settings.network_timeout_ms)
             self.contexts[session["id"]] = context
             self.locks[session["id"]] = asyncio.Lock()
+            self.blocked_hosts[session["id"]] = {"navigation": set(), "resources": set()}
 
             async def route_request(route):
-                try:
-                    validate_url(route.request.url, profile.allowed_hosts)
-                except (AppError, ValueError):
-                    if route.request.is_navigation_request():
-                        self.blocked.add(session["id"])
-                    await route.abort()
-                    return
-                await route.continue_()
+                await self.route_request(session["id"], profile, route)
 
             await context.route("**/*", route_request)
             page = await context.new_page()
@@ -64,6 +62,95 @@ class BrowserAccess:
             raise AppError("BROWSER_SESSION_UNAVAILABLE", "专用浏览器启动或入口访问失败。",
                            "检查网络，或运行 uv run playwright install chromium 后重建会话。") from None
         return {**session, "user_action": "请在专用浏览器亲自完成认证，再调用 verify_access_session。"}
+
+    async def route_request(self, session_id: str, profile: Institution, route):
+        try:
+            upgraded = provider_https_upgrade(route.request.url, profile, route.request.method)
+            if upgraded:
+                # A local navigation document forces a fresh intercepted HTTPS request.
+                # Playwright's native 3xx continuation does not re-run route handlers.
+                self.https_upgrades[session_id] = self.https_upgrades.get(session_id, 0) + 1
+                destination = html.escape(upgraded, quote=True)
+                await route.fulfill(status=200, content_type="text/html; charset=utf-8",
+                    headers={"cache-control": "no-store", "referrer-policy": "no-referrer"},
+                    body=f'<html><head><meta http-equiv="refresh" content="0;url={destination}"></head>'
+                         '<body>正在返回知网…</body></html>')
+                return
+            validate_url(route.request.url, profile.allowed_hosts)
+        except (AppError, ValueError):
+            hostname = urlsplit(route.request.url).hostname
+            category = "navigation" if route.request.is_navigation_request() else "resources"
+            hosts = self.blocked_hosts.setdefault(session_id, {"navigation": set(), "resources": set()})
+            if hostname:
+                hosts[category].add(hostname)
+            if route.request.is_navigation_request():
+                self.blocked.add(session_id)
+            await route.abort()
+            return
+        await route.fallback()
+
+    async def inspect(self, session_id: str) -> dict:
+        """Read only known provider labels and structural hints, never login DOM or URLs.
+
+        This local diagnostic does not establish identity or change a configured rule.
+        It helps maintainers pin a genuine institution widget after human verification.
+        """
+        session = self.store.get(session_id, "session")
+        profile = self.settings.institution(session["institution_id"])
+        pages = []
+        async with self.locked(session_id) as context:
+            for page in context.pages:
+                url = urlsplit(page.url)
+                item = {"host": url.hostname, "kind": "unverified", "institution_candidates": []}
+                if url.hostname not in profile.provider_hosts:
+                    item["kind"] = "identity_provider" if url.hostname in profile.allowed_hosts else "unverified"
+                    pages.append(item)
+                    continue
+                if url.scheme != "https" or any(
+                    word in url.path.casefold() for word in ("login", "saml", "callback", "auth", "shibboleth")
+                ):
+                    item["kind"] = "authentication"
+                    pages.append(item)
+                    continue
+                if await page.locator('input[type="password"]').count():
+                    item["kind"] = "authentication"
+                    pages.append(item)
+                    continue
+                safety = page.get_by_text("安全验证", exact=True)
+                if "安全验证" in await page.title() or (
+                    await safety.count() and await safety.first.is_visible()
+                ):
+                    item["kind"] = "human_verification"
+                    pages.append(item)
+                    continue
+                item["kind"] = "provider"
+                for name in profile.display_names:
+                    matches = page.get_by_text(name, exact=True)
+                    for index in range(min(await matches.count(), 5)):
+                        element = matches.nth(index)
+                        if not await element.is_visible():
+                            continue
+                        structure = await element.evaluate(
+                            "element => ({tag: element.tagName.toLowerCase(), id: element.id, classes: element.className})"
+                        )
+                        tag = structure["tag"]
+                        tokens = [structure["id"], *str(structure["classes"]).split()]
+                        safe_tokens = [token for token in tokens if re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_-]{0,47}", token)
+                                       and not re.search(r"saml|cookie|token|password|session|secret", token, re.I)]
+                        suggestions = []
+                        if structure["id"] in safe_tokens:
+                            suggestions.append(f"#{structure['id']}")
+                        suggestions.extend(f"{tag}.{token}" for token in safe_tokens if token != structure["id"])
+                        item["institution_candidates"].append({"expected_name": name, "tag": tag,
+                                                               "selector_candidates": suggestions})
+                pages.append(item)
+        blocked = self.blocked_hosts.get(session_id, {"navigation": set(), "resources": set()})
+        return {"session_id": session_id, "identity_verified": session["state"] == "ready",
+                "open_page_count": len(pages),
+                "configured_institution_selector": bool(profile.selectors.institution_label),
+                "https_return_upgrades": self.https_upgrades.get(session_id, 0),
+                "pages": pages, "blocked_hosts": {key: sorted(value) for key, value in blocked.items()},
+                "note": "候选节点仅供维护者核验；学校名出现在正文不能证明机构认证。"}
 
     @asynccontextmanager
     async def locked(self, session_id: str):
@@ -84,7 +171,9 @@ class BrowserAccess:
         require(session["state"] != "closed", "BROWSER_SESSION_UNAVAILABLE", "会话已关闭。")
         profile = self.settings.institution(session["institution_id"])
         state, code, detected = "waiting_for_user", "AUTHENTICATION_REQUIRED", None
-        if session_id in self.blocked:
+        if not context.pages:
+            state, code = "expired", "BROWSER_SESSION_UNAVAILABLE"
+        elif session_id in self.blocked:
             state, code = "paused", "HOST_NOT_ALLOWED"
         else:
             for page in context.pages:
@@ -145,6 +234,8 @@ class BrowserAccess:
             async with self.locks[session_id]:
                 await self.contexts.pop(session_id).close()
         self.blocked.discard(session_id)
+        self.blocked_hosts.pop(session_id, None)
+        self.https_upgrades.pop(session_id, None)
         self.store.put("session", {**session, "state": "closed", "error_code": None})
         self.store.db.commit()
         return {"session_id": session_id, "state": "closed", "cleared": "project_ephemeral_context",
