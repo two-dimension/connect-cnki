@@ -16,17 +16,33 @@
   },
   "detail_refresh": {
     "state": "passed",
-    "source_id": "CAPJ:HGSZ20261017002",
+    "source_id": "CAPJ:JSGG20261015001",
     "abstract_present": true,
-    "abstract_characters": 503,
-    "observed_truncated": true
+    "abstract_characters": 339,
+    "abstract_status": "source_text"
   },
   "opaque_detail_urls_in_persistent_records": 0,
   "pending": [
-    "source_page_pagination",
-    "sort_semantics",
+    "cited_sort",
     "other_query_fields",
+    "year_and_type_filters",
     "carsi",
-    "real_fulltext"
-  ]
+    "real_fulltext",
+    "20_query_acceptance_set"
+  ],
+  "source_page_pagination": {
+    "state": "passed",
+    "pages_read": 2,
+    "collected": 40,
+    "stop_reason": "candidate_budget",
+    "sort": "relevance"
+  },
+  "sort_verification": {
+    "state": "passed",
+    "requested": "relevance",
+    "observed_active_selector": "#orderList #FFD",
+    "observed_active_class": "DESC cur",
+    "source_default": "latest",
+    "note": "Earlier basic-query trials used the source default; they are not relevance-sort evidence."
+  }
 }

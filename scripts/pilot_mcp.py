@@ -72,7 +72,8 @@ async def run(arguments):
                             emit({"code": "NO_NEXT_CURSOR", "message": "没有可继续的游标。"})
                             continue
                         values = {"project_id": project_id, "session_id": session_id,
-                            "query": {"text": arguments.query, "field": arguments.field}, "limit": arguments.limit}
+                            "query": {"text": arguments.query, "field": arguments.field}, "limit": arguments.limit,
+                            "sort": arguments.sort}
                         if command == "next":
                             values["cursor"] = cursor
                         result = await call("search_papers", values)
@@ -95,6 +96,7 @@ if __name__ == "__main__":
     parser.add_argument("--mode", choices=["institution_network", "carsi"], default="institution_network")
     parser.add_argument("--query", required=True)
     parser.add_argument("--field", choices=["subject", "title", "keywords", "author", "source"], default="subject")
+    parser.add_argument("--sort", choices=["relevance", "latest", "cited"], default="relevance")
     parser.add_argument("--limit", type=int, choices=range(1, 21), default=3)
     parser.add_argument("--budget", type=int, default=20)
     try:

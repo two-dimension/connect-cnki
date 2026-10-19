@@ -302,12 +302,16 @@ class Application:
                     next_cursor = self.store.put("cursor", {"query_id": run["id"], "consumed": False})["id"]
                 budget_reason = "permission_budget" if candidate_cap < project["budget"] else "candidate_budget"
                 run["stop_reason"] = budget_reason if budget_hit else "source_end" if end else "page_limit"
+                run["applied_sort"] = sort
+                run["sort_verification"] = "active_control_match" if (
+                    profile.selectors.sort_active_class and sort in profile.selectors.sort_controls) else "configured_default"
                 self.store.put("query", run)
                 if cursor_record:
                     self.store.put("cursor", {**cursor_record, "consumed": True})
                 return {"query_id": run["id"], "papers": output, "next_cursor": next_cursor,
                         "pages_read": run["pages_read"], "collected": run["collected"],
                         "effective_candidate_budget": candidate_cap,
+                        "applied_sort": sort, "sort_verification": run["sort_verification"],
                         "stop_reason": run["stop_reason"], "exhaustive": False, "fetched_at": now()}
 
     @endpoint

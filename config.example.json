@@ -27,7 +27,14 @@
       "selectors": {
         "institution_label": ".ecp_header_unitName",
         "search_input": "#txt_search",
-        "search_button": "input.search-btn"
+        "search_button": "input.search-btn",
+        "default_sort": "latest",
+        "sort_active_class": "cur",
+        "sort_controls": {
+          "relevance": "#orderList #FFD",
+          "latest": "#orderList #PT",
+          "cited": "#orderList #CF"
+        }
       },
       "subscriptions": [],
       "verified_at": "2026-10-19T04:18:27+00:00",

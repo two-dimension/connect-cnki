@@ -13,12 +13,15 @@ from cnki_mcp.models import SearchQuery
 @pytest.mark.browser
 async def test_real_browser_synthetic_search_pagination_and_identity(app):
     fixture = (Path(__file__).parent / "fixtures" / "cnki_synthetic.html").read_text(encoding="utf-8")
+    fixture = fixture.replace("</html>", '''<ul><li id="fixture-relevance"
+        onclick="this.className='cur'; setTimeout(()=>render(1),70)">相关度</li></ul></html>''')
     app.settings.browser_headless = True
     profile = Institution(
         institution_id="fixture", display_names=["厦门大学"], access_modes=["institution_network", "carsi"],
         entry_urls={"institution_network": "https://fixture.example/", "carsi": "https://fixture.example/"},
         search_url="https://fixture.example/", allowed_hosts=["fixture.example"], provider_hosts=["fixture.example"],
-        selectors=Selectors(institution_label=".institution"),
+        selectors=Selectors(institution_label=".institution", default_sort="latest", sort_active_class="cur",
+                            sort_controls={"relevance": "#fixture-relevance"}),
         policy_records=[PolicyRecord(operation=operation, state="allowed", source="Synthetic test permission",
             verified_by="test_suite", verified_at=datetime.now(UTC) - timedelta(days=1),
             expires_at=datetime.now(UTC) + timedelta(days=1), resource_types=["*"], min_interval_seconds=0.1)

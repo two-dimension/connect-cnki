@@ -100,9 +100,11 @@ def test_conservative_identity_and_restart(tmp_path):
         paper = PaperInput(title="A study", authors=["A"], year=2024, doi="https://doi.org/10.1234/TEST")
         first = library.ingest(project["id"], paper, {}, "test")
         repeat = library.ingest(project["id"], paper, {}, "test")
+        cleaned = library.ingest(project["id"], paper.model_copy(update={"authors": ["A", ""]}), {}, "test")
         conflict = library.ingest(project["id"], paper.model_copy(update={"authors": ["B"]}), {}, "test")
         store.put("job", {"state": "running"})
     assert repeat["version_id"] == first["version_id"]
+    assert cleaned["version_id"] == first["version_id"]
     assert not conflict["matched_existing"] and conflict["duplicate_ids"]
     store.close()
     reopened = Store(tmp_path)

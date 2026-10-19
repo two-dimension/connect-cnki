@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from cnki_mcp.config import Institution, PolicyRecord
-from cnki_mcp.models import PaperInput, SearchQuery
+from cnki_mcp.models import PaperInput, SearchFilters, SearchQuery
 from cnki_mcp.providers import extract_results
 
 
@@ -58,6 +58,15 @@ async def test_metadata_rate_requirement_is_applied_to_search(app, monkeypatch):
     assert sleeps == [4]
 
 
+async def test_unknown_default_sort_is_rejected_before_source_navigation(app):
+    from cnki_mcp.core import AppError
+
+    with pytest.raises(AppError) as failure:
+        await app.provider.page(object(), profile(), "fixture_session", "fixture_query", SearchQuery(text="fixture"),
+                                SearchFilters(), "relevance", 1)
+    assert failure.value.code == "UNSUPPORTED_SORT"
+
+
 def test_parser_does_not_collect_rows_beyond_remaining_budget():
     fixture = '''<table class="result-table-list"><tbody>
         <tr><td class="name"><a class="fz14" href="https://fixture.example/detail?dbcode=CJFD&amp;filename=ONE">Fixture one</a></td></tr>
@@ -71,13 +80,14 @@ def test_parser_does_not_collect_rows_beyond_remaining_budget():
 def test_current_kns_collect_attributes_provide_identity_without_opaque_detail_parameters():
     fixture = '''<table class="result-table-list"><tbody><tr>
         <td class="name"><a class="fz14" href="https://fixture.example/kcms2/article/abstract?v=PRIVATE_DETAIL_TOKEN">Synthetic <em>current</em> layout</a></td>
-        <td class="author"><a>Fixture Author</a></td><td class="source">Fixture Journal</td><td class="date">2026-10-19</td>
+        <td class="author"><a>Fixture Author</a><a class="showAllAuthors"></a></td><td class="source">Fixture Journal</td><td class="date">2026-10-19</td>
         <td class="operat"><a class="icon-collect" data-dbname="CJFDLAST2026" data-resource="CJFQ" data-filename="FIXTURE202601001"></a></td>
         </tr></tbody></table>'''
     locators = {}
     record, = extract_results(fixture, "https://fixture.example/kns8s/search", profile(), detail_locators=locators)
     assert record.source_id == "CJFQ:FIXTURE202601001" and record.paper_type == "journal"
     assert record.title == "Synthetic current layout"
+    assert record.authors == ["Fixture Author"]
     assert record.detail_url is None
     assert locators[record.source_id] == "https://fixture.example/kcms2/article/abstract?v=PRIVATE_DETAIL_TOKEN"
     assert "PRIVATE_DETAIL_TOKEN" not in record.model_dump_json()

@@ -20,10 +20,12 @@ def normalize_doi(value: str | None) -> str | None:
 
 def compatible(a: dict, b: dict) -> bool:
     # Missing fields cannot silently establish identity; conflicts always stop an auto-match.
+    left_authors = [normalize(x) for x in a["authors"] if normalize(x)]
+    right_authors = [normalize(x) for x in b["authors"] if normalize(x)]
     return (
         normalize(a["title"]) == normalize(b["title"])
-        and bool(a["authors"] and b["authors"])
-        and [normalize(x) for x in a["authors"]] == [normalize(x) for x in b["authors"]]
+        and bool(left_authors and right_authors)
+        and left_authors == right_authors
         and a["year"] == b["year"]
         and a["version_type"] == b["version_type"]
         and a["paper_type"] == b["paper_type"]
@@ -38,6 +40,7 @@ class Library:
 
     def ingest(self, project_id: str, record: PaperInput, rights: dict, origin: str) -> dict:
         paper = record.model_dump()
+        paper["authors"] = [author.strip() for author in paper["authors"] if author.strip()]
         paper["doi"] = normalize_doi(paper["doi"])
         paper["detail_url"] = public_url(paper["detail_url"])
         existing = self.store.all("version")
@@ -57,6 +60,7 @@ class Library:
             version = match
             if same_source:
                 version["detail_url"] = paper["detail_url"]
+                version["authors"] = paper["authors"]
                 if normalize(paper["title"]) == normalize(version["title"]):
                     version["title"] = paper["title"]
                 self.store.put("version", version)

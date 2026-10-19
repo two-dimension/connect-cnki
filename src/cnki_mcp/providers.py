@@ -60,7 +60,8 @@ def extract_results(html: str, base_url: str, profile: Institution, record_limit
             element = row.select_one(selector)
             return element.get_text(" ", strip=True) if element else None
         author_cell = row.select_one(selectors.authors)
-        authors = [a.get_text(" ", strip=True) for a in author_cell.select("a")] if author_cell else []
+        authors = [re.sub(r"\s+", " ", a.get_text()).strip() for a in author_cell.select("a")
+                   if a.get_text(strip=True)] if author_cell else []
         if not authors:
             authors = [x.strip() for x in re.split(r"[;；,，]+", value(selectors.authors) or "") if x.strip()]
         date = value(selectors.date)
@@ -136,8 +137,8 @@ class CNKIProvider:
         controls = {k: v for k, v in filters.model_dump().items() if v not in (None, [])}
         require(all(k in selectors.filter_controls for k in controls),
                 "UNSUPPORTED_FILTER", "当前入口尚未配置该筛选条件。")
-        if sort != "relevance":
-            require(sort in selectors.sort_controls, "UNSUPPORTED_SORT", "当前入口尚未核验该排序控件。")
+        require(sort == selectors.default_sort or sort in selectors.sort_controls,
+                "UNSUPPORTED_SORT", "当前入口尚未核验该排序控件或默认排序。")
         await self.throttle(profile.institution_id, "automated_search", "metadata_collect")
         if page_number == 1:
             page = await context.new_page()
@@ -155,8 +156,6 @@ class CNKIProvider:
                 await page.locator(selectors.search_input).fill(query.text)
                 await page.locator(selectors.search_button).click()
                 await page.wait_for_load_state("domcontentloaded")
-                if sort != "relevance":
-                    await page.locator(selectors.sort_controls[sort]).click()
             except TimeoutError:
                 await self.guard_page(page, profile, session_id)
                 raise AppError("SOURCE_LAYOUT_CHANGED", "检索控件未按预期出现或完成操作，请更新入口适配。") from None
@@ -181,6 +180,13 @@ class CNKIProvider:
             await self.guard_page(page, profile, session_id)
             raise AppError("SOURCE_LAYOUT_CHANGED", "结果等待超时或页面结构变化，停止采集。") from None
         await self.guard_page(page, profile, session_id)
+        if page_number == 1 and sort != selectors.default_sort:
+            await self.apply_sort(page, profile, session_id, sort)
+        if selectors.sort_active_class and sort in selectors.sort_controls:
+            selected = page.locator(selectors.sort_controls[sort])
+            require(await selected.count() and selectors.sort_active_class in (
+                (await selected.first.get_attribute("class")) or "").split(),
+                "SOURCE_LAYOUT_CHANGED", "来源未确认所请求的排序，停止返回结果。")
         detail_locators = {}
         records = extract_results(await page.content(), page.url, profile, record_limit, detail_locators)
         for source_id, locator in detail_locators.items():
@@ -190,6 +196,42 @@ class CNKIProvider:
                         and await next_button.first.is_enabled()
                         and "disabled" not in ((await next_button.first.get_attribute("class")) or "").lower())
         return records, has_next
+
+    async def apply_sort(self, page, profile: Institution, session_id: str, sort: str):
+        from playwright.async_api import Error
+
+        selectors = profile.selectors
+        control = page.locator(selectors.sort_controls[sort])
+        previous = await page.locator(selectors.result_rows).all_text_contents()
+        first = await page.locator(selectors.result_rows).first.element_handle() if previous else None
+        await self.throttle(profile.institution_id, "automated_search", "metadata_collect")
+        try:
+            await control.click()
+            await page.wait_for_load_state("domcontentloaded")
+            if first:
+                try:
+                    await page.wait_for_function("""({element, selector, old}) => !element.isConnected ||
+                        JSON.stringify(Array.from(document.querySelectorAll(selector), row => row.textContent)) !== JSON.stringify(old)
+                    """, arg={"element": first, "selector": selectors.result_rows, "old": previous})
+                except Error:
+                    # A full navigation invalidates the old DOM handle. A still-connected
+                    # handle means no observable result update and cannot be accepted.
+                    try:
+                        connected = await first.evaluate("element => element.isConnected")
+                    except Error:
+                        connected = False
+                    if connected:
+                        raise
+            await page.locator(f"{selectors.result_rows}, {selectors.empty_results}").first.wait_for(state="visible")
+        except Error:
+            await self.guard_page(page, profile, session_id)
+            raise AppError("SOURCE_LAYOUT_CHANGED", "排序结果未能可靠更新，停止返回旧排序。") from None
+        finally:
+            if first:
+                try:
+                    await first.dispose()
+                except Error:
+                    pass
 
     async def detail(self, context, profile: Institution, session_id: str, paper: dict):
         detail_url = self.detail_locator(session_id, paper)

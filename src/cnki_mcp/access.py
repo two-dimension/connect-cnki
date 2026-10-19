@@ -194,6 +194,9 @@ class BrowserAccess:
                         structure = await widget.evaluate("""element => ({
                             tag: element.tagName.toLowerCase(), id: element.id,
                             classes: typeof element.className === 'string' ? element.className : '',
+                            ancestors: [element.parentElement,element.parentElement?.parentElement,
+                                element.parentElement?.parentElement?.parentElement].filter(node => node && node.tagName !== 'BODY')
+                                .map(node => ({tag:node.tagName.toLowerCase(),id:node.id,classes:typeof node.className === 'string' ? node.className : ''})),
                             label: element.tagName === 'INPUT' ? (element.getAttribute('placeholder') || '')
                                    : (element.innerText || '').slice(0,160)
                         })""")
@@ -201,7 +204,7 @@ class BrowserAccess:
                             continue
                         item["search_widgets"].append(structure)
                     item["known_search_choices"] = []
-                    for label in ("主题", "篇名", "篇关摘", "关键词", "作者", "来源", "相关度", "发表时间", "被引", "下载"):
+                    for label in ("主题", "篇名", "篇关摘", "关键词", "作者", "来源", "文献来源", "相关度", "发表时间", "被引", "下载", "高级检索"):
                         choices = page.get_by_text(label, exact=True)
                         for index in range(min(await choices.count(), 4)):
                             choice = choices.nth(index)

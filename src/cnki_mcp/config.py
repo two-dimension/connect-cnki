@@ -69,7 +69,9 @@ class Selectors(StrictModel):
     pdf_download: str = "#pdfDown"
     not_subscribed: str = ""
     resource_available: str = ""
-    sort_controls: dict[Literal["latest", "cited"], str] = Field(default_factory=dict)
+    default_sort: Literal["unknown", "relevance", "latest", "cited"] = "unknown"
+    sort_active_class: str = ""
+    sort_controls: dict[Literal["relevance", "latest", "cited"], str] = Field(default_factory=dict)
     filter_controls: dict[str, str] = Field(default_factory=dict)
     search_fields: dict[str, str] = Field(default_factory=dict)
 
