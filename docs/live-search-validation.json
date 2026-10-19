@@ -26,7 +26,6 @@
     "cited_sort",
     "other_query_fields",
     "year_and_type_filters",
-    "carsi",
     "real_fulltext",
     "20_query_acceptance_set"
   ],
@@ -44,5 +43,21 @@
     "observed_active_class": "DESC cur",
     "source_default": "latest",
     "note": "Earlier basic-query trials used the source default; they are not relevance-sort evidence."
-  }
+  },
+  "query_field_validation": [
+    {
+      "observed_at": "2026-10-19T11:35:56.506802+00:00",
+      "field": "title",
+      "text": "大语言模型",
+      "state": "passed",
+      "returned": 3,
+      "applied_sort": "relevance",
+      "field_label_verified_before_and_after": true,
+      "source_id_samples": [
+        "CJFQ:XYKZ202608015",
+        "CJFQ:ZGYI202607029",
+        "CJFQ:HLKX202509026"
+      ]
+    }
+  ]
 }

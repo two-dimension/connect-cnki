@@ -339,7 +339,7 @@ class BrowserAccess:
                                     .filter(name => link.hasAttribute(name)).map(name => [name, link.getAttribute(name)]))
                             })).slice(0,8),
                             checkboxes: Array.from(element.querySelectorAll('input[type=checkbox]'), input => ({
-                                name: input.name, value: input.value
+                                name: input.name, id: input.id, classes: input.className
                             }))
                         })""")
                         for link in shape["links"]:
@@ -348,8 +348,6 @@ class BrowserAccess:
                             target = urlsplit(link.pop("href"))
                             link["target_shape"] = {"host": target.hostname, "path": target.path,
                                                     "query_keys": [key for key, _ in parse_qsl(target.query)]}
-                        shape["checkboxes"] = [checkbox for checkbox in shape["checkboxes"]
-                            if re.fullmatch(r"[A-Za-z0-9_.!;:-]{1,200}", checkbox["value"]) and "!" in checkbox["value"]]
                         item["result_layout"].append(shape)
                 for name in profile.display_names:
                     matches = page.get_by_text(name, exact=True)

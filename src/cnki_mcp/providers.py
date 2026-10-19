@@ -146,7 +146,7 @@ class CNKIProvider:
             self.access.query_pages[query_id] = page
             await self.goto(page, profile.search_url, profile, session_id)
             await self.guard_page(page, profile, session_id)
-            from playwright.async_api import Error
+            from playwright.async_api import Error, TimeoutError
 
             stage = "字段菜单"
             try:
@@ -155,6 +155,14 @@ class CNKIProvider:
                         trigger = page.locator(selectors.search_field_trigger)
                         await trigger.wait_for(state="visible")
                         await trigger.click()
+                        option = page.locator(selectors.search_fields[query.field])
+                        try:
+                            await option.wait_for(state="visible", timeout=2000)
+                        except TimeoutError:
+                            # Source scripts can bind the dropdown after it first
+                            # renders. Retry this local menu action once, before
+                            # submitting any query; the selected label is verified.
+                            await trigger.click()
                     stage = "字段选项"
                     await page.locator(selectors.search_fields[query.field]).click()
                 stage = "字段标签"
@@ -217,12 +225,17 @@ class CNKIProvider:
         return records, has_next, source_page_truncated
 
     async def verify_field(self, page, profile: Institution, field: str):
+        from playwright.async_api import Error
+
         selectors = profile.selectors
         if selectors.search_field_label:
             expected = selectors.search_field_labels.get(field)
             require(expected, "UNSUPPORTED_QUERY", "该检索字段尚无核验标签。")
             label = page.locator(selectors.search_field_label)
-            await label.wait_for(state="visible")
+            try:
+                await label.wait_for(state="visible")
+            except Error:
+                raise AppError("SOURCE_LAYOUT_CHANGED", "检索字段标签缺失或存在多个匹配项。") from None
             require(await label.count() == 1 and (await label.inner_text()).strip() == expected,
                     "SOURCE_LAYOUT_CHANGED", "来源未保持所请求的检索字段，停止返回结果。")
 

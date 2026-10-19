@@ -59,8 +59,8 @@
         "institution_label": ".ecp_header_unitName",
         "search_input": "#txt_search",
         "search_button": "input.search-btn",
-        "search_field_trigger": ".sort-default",
-        "search_field_label": ".sort-default > span",
+        "search_field_trigger": ".search-main .sort-default",
+        "search_field_label": ".search-main .sort-default > span",
         "search_field_labels": {
           "subject": "主题",
           "title": "篇名",
@@ -69,10 +69,10 @@
           "source": "文献来源"
         },
         "search_fields": {
-          "title": ".sort-list >> text=\"篇名\"",
-          "keywords": ".sort-list >> text=\"关键词\"",
-          "author": ".sort-list >> text=\"作者\"",
-          "source": ".sort-list >> text=\"文献来源\""
+          "title": ".search-main .sort-list >> text=\"篇名\"",
+          "keywords": ".search-main .sort-list >> text=\"关键词\"",
+          "author": ".search-main .sort-list >> text=\"作者\"",
+          "source": ".search-main .sort-list >> text=\"文献来源\""
         },
         "default_sort": "latest",
         "sort_active_class": "cur",
@@ -94,7 +94,7 @@
         "https://login.cnki.net/tlogin/scripts/top.js",
         "https://login.cnki.net/tlogin/scripts/loginState.js"
       ],
-      "acceptance": "institution_network_search_and_abstract_verified_carsi_pending",
+      "acceptance": "institution_network_search_abstract_and_carsi_login_verified",
       "policy_records": [
         {
           "operation": "automated_search",

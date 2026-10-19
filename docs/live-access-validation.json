@@ -16,6 +16,30 @@
     "error_code": null
   },
   "mcp_test_session_closed": true,
-  "not_exercised": ["paper_search", "paper_download", "carsi"],
-  "authentication_material_saved": false
+  "not_exercised": [
+    "paper_search",
+    "paper_download",
+    "carsi"
+  ],
+  "authentication_material_saved": false,
+  "subsequent_carsi_validation": {
+    "observed_at": "2026-10-19T11:34:17.843164+00:00",
+    "transport": "official MCP Python client over stdio",
+    "mode": "carsi",
+    "user_completed_authentication": true,
+    "provider_host": "www.cnki.net",
+    "selector": ".ecp_header_unitName",
+    "verification": {
+      "status": "succeeded",
+      "state": "ready",
+      "institution_name": "厦门大学",
+      "evidence": "exact_institution_label_match"
+    },
+    "https_return_upgrades": 2,
+    "blocked_navigation_hosts": [],
+    "guard_errors": [],
+    "network_environment": "campus network",
+    "off_campus_network_tested": false,
+    "authentication_material_saved": false
+  }
 }

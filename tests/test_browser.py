@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from playwright.async_api import async_playwright
 
-from cnki_mcp.config import Institution, PolicyRecord, Selectors
+from cnki_mcp.config import Institution, PolicyRecord, Selectors, Settings
 from cnki_mcp.core import AppError
 from cnki_mcp.models import SearchQuery
 
@@ -15,11 +15,14 @@ from cnki_mcp.models import SearchQuery
 async def test_real_browser_synthetic_search_pagination_and_identity(app):
     fixture = (Path(__file__).parent / "fixtures" / "cnki_synthetic.html").read_text(encoding="utf-8")
     fixture = fixture.replace('<input id="txt_SearchText">', '''<div class="search-main">
-        <div class="sort-default" onclick="document.querySelector('#fixture-fields').hidden=false"><span>主题</span></div>
-        <ul id="fixture-fields" hidden><li><a onclick="document.querySelector('.sort-default span').textContent='篇名'; this.parentElement.parentElement.hidden=true">篇名</a></li></ul>
+        <div class="sort-default" onclick="if(this.dataset.clicked)document.querySelector('#fixture-fields').hidden=false; this.dataset.clicked='1'"><span>主题</span></div>
+        <ul id="fixture-fields" class="sort-list" hidden><li><a onclick="document.querySelector('.search-main .sort-default span').textContent='篇名'; this.parentElement.parentElement.hidden=true">篇名</a></li></ul>
         <input id="txt_SearchText">''').replace('</button>\n<table', '</button></div>\n<table', 1)
     fixture = fixture.replace("</html>", '''<ul><li id="fixture-relevance"
-        onclick="this.className='cur'; setTimeout(()=>render(1),70)">相关度</li></ul></html>''')
+        onclick="this.className='cur'; setTimeout(()=>render(1),70)">相关度</li></ul>
+        <div class="sort-default"><span>20</span></div></html>''')
+    fixture = fixture.replace('<td class="name">', '<td class="name"><input type="checkbox" name="CookieName" value="PRIVATE_CHECKBOX_TOKEN!">')
+    search_selectors = Settings.load(Path(__file__).parents[1] / "config.example.json").institution("xmu").selectors
     app.settings.browser_headless = True
     profile = Institution(
         institution_id="fixture", display_names=["厦门大学"], access_modes=["institution_network", "carsi"],
@@ -27,8 +30,9 @@ async def test_real_browser_synthetic_search_pagination_and_identity(app):
         search_url="https://fixture.example/", allowed_hosts=["fixture.example"], provider_hosts=["fixture.example"],
         selectors=Selectors(institution_label=".institution", default_sort="latest", sort_active_class="cur",
                             sort_controls={"relevance": "#fixture-relevance"},
-                            search_field_trigger=".search-main .sort-default", search_field_label=".search-main .sort-default > span",
-                            search_fields={"title": '.search-main a:text-is("篇名")'},
+                            search_field_trigger=search_selectors.search_field_trigger,
+                            search_field_label=search_selectors.search_field_label,
+                            search_fields={"title": search_selectors.search_fields["title"]},
                             search_field_labels={"subject": "主题", "title": "篇名"}),
         policy_records=[PolicyRecord(operation=operation, state="allowed", source="Synthetic test permission",
             verified_by="test_suite", verified_at=datetime.now(UTC) - timedelta(days=1),
@@ -75,6 +79,7 @@ async def test_real_browser_synthetic_search_pagination_and_identity(app):
         layout = await app.get_access_status(sid, inspect_page=True)
         assert any(item.get("result_layout") for item in layout["data"]["browser_diagnostics"]["pages"])
         assert "PRIVATE_TOKEN" not in str(layout)
+        assert "PRIVATE_CHECKBOX_TOKEN" not in str(layout)
         cursor = first["next_cursor"]
         assert "PRIVATE_TOKEN" not in str(first)
         second = await app.search_papers(project, sid, query, cursor=cursor, limit=1)
