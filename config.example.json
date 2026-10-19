@@ -25,16 +25,20 @@
       "provider_hosts": ["kns.cnki.net", "www.cnki.net", "fsso.cnki.net"],
       "resource_hosts": ["piccache.cnki.net", "turing.captcha.qcloud.com", "turing.captcha.gtimg.com"],
       "selectors": {
-        "institution_label": ""
+        "institution_label": ".ecp_header_unitName"
       },
       "subscriptions": [],
-      "rules_version": "xmu-guides-2026-10-19-selectors-unverified",
+      "verified_at": "2026-10-19T04:18:27+00:00",
+      "rules_version": "xmu-ip-header-2026-10-19",
       "guide_sources": [
         "https://library.xmu.edu.cn/zy/dzzy/xwfw/CARSI.htm",
         "https://library.xmu.edu.cn/zy/dzzy.htm",
-        "https://vpn.xmu.edu.cn/"
+        "https://vpn.xmu.edu.cn/",
+        "https://www.cnki.net/",
+        "https://login.cnki.net/tlogin/scripts/top.js",
+        "https://login.cnki.net/tlogin/scripts/loginState.js"
       ],
-      "acceptance": "official_guides_checked_real_school_and_selectors_pending",
+      "acceptance": "institution_network_identity_verified_search_and_carsi_pending",
       "policy_records": [
         {"operation": "automated_search", "state": "unknown", "source": "https://library.xmu.edu.cn/zy/dzzy.htm"},
         {"operation": "metadata_collect", "state": "unknown", "source": "https://library.xmu.edu.cn/zy/dzzy.htm"},

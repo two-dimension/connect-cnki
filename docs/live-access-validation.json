@@ -1,0 +1,21 @@
+{
+  "observed_at": "2026-10-19T04:19:31.525030+00:00",
+  "environment": "Windows, campus network, project-owned ephemeral Edge context",
+  "transport": "MCP stdio, official Python client and server SDK",
+  "tool_count": 29,
+  "institution_id": "xmu",
+  "mode": "institution_network",
+  "provider_host": "www.cnki.net",
+  "selector": ".ecp_header_unitName",
+  "rules_version": "xmu-ip-header-2026-10-19",
+  "verification": {
+    "status": "succeeded",
+    "state": "ready",
+    "institution_name": "厦门大学",
+    "evidence": "exact_institution_label_match",
+    "error_code": null
+  },
+  "mcp_test_session_closed": true,
+  "not_exercised": ["paper_search", "paper_download", "carsi"],
+  "authentication_material_saved": false
+}
