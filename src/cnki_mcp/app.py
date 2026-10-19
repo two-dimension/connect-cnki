@@ -33,6 +33,7 @@ from .parsing import Documents
 from .policy import PolicyGate, protected
 from .providers import CNKIProvider
 from .review_evidence import ReviewEvidence
+from .review_export import ReviewExporter
 from .review_models import (
     CorpusItemInput,
     PaperCardInput,
@@ -42,6 +43,7 @@ from .review_models import (
     SynthesisInput,
 )
 from .review_preparation import ReviewPreparation
+from .review_revisions import ReviewRevisions
 from .review_workspace import ReviewWorkspace
 from .review_writing import ReviewWriting
 from .reviews import Reviews
@@ -118,6 +120,8 @@ class Application:
         self.review_workspace = ReviewWorkspace(self.store, self.library, self.gate)
         self.review_evidence = ReviewEvidence(self.review_workspace, settings)
         self.review_writing = ReviewWriting(self.review_workspace)
+        self.review_revisions = ReviewRevisions(self.review_workspace)
+        self.review_exporter = ReviewExporter(self.review_workspace, settings)
         self.review_preparation = ReviewPreparation(self.review_workspace, self.review_evidence, self.jobs, settings)
         self.jobs.handlers = {"parse_fulltext": self.documents.parse, "acquire_fulltext": self._download}
         self.jobs.handlers.update({"prepare_review_v2": self.review_preparation.run,
@@ -606,7 +610,19 @@ class Application:
     @endpoint
     async def get_review_progress(self, project_id: ID) -> dict:
         """只读增强综述进度、材料缺口和实际返回范围；不隐式启用或开始工作。"""
-        return self.review_workspace.progress(project_id)
+        progress = self.review_workspace.progress(project_id)
+        progress["impact"] = self.review_revisions.impact(project_id)
+        progress["review_jobs"] = [{k: j.get(k) for k in ("id", "operation", "state", "progress", "error", "recovery_reason")}
+                                  for j in self.store.all("job")
+                                  if j["arguments"].get("project_id") == project_id and
+                                  j["operation"] in {"prepare_review_v2", "prepare_synthesis"}]
+        return progress
+
+    @endpoint
+    async def get_review_impact(self, project_id: ID, changed_ids: list[str] | None = None,
+                                base_revision_id: str | None = None, target_revision_id: str | None = None) -> dict:
+        """只读依赖影响、新材料提示和同一成果的版本差异；不改写历史或自动开展修订。"""
+        return self.review_revisions.impact(project_id, changed_ids, base_revision_id, target_revision_id)
 
     @endpoint
     async def get_review_artifact(self, project_id: ID, artifact_id: str | None = None,
@@ -682,8 +698,12 @@ class Application:
         return {"export_id": export_id, "path": str(output), "content": content, "manifest": manifest}
 
     @endpoint
-    async def export_project(self, project_id: ID) -> dict:
-        """导出检索记录、筛选清单、文献矩阵、草稿及任务记录；受限内容按同一出站策略处理。"""
+    async def export_project(self, project_id: ID, include_review: bool = False,
+                             format: Literal["json", "markdown"] = "json",
+                             review_revision_ids: list[str] | None = None,
+                             style: Literal["gbt-7714-2025", "gbt-7714-2015"] = "gbt-7714-2025") -> dict:
+        """默认导出基础记录；显式选择后加入历史综述与统一引文正文，支持 JSON/Markdown。"""
+        require(include_review or review_revision_ids is None, "INVALID_ARGUMENT", "选择章节需 include_review=true。")
         self.store.get(project_id, "project")
         papers = self.store.papers(project_id)
         ids = {p["id"] for p in papers}
@@ -691,27 +711,25 @@ class Application:
         for decision in decisions:
             decision["dimensions"] = protected(decision["dimensions"], "fulltext",
                                                  self.store.get(decision["version_id"], "version")["rights"])
-        package = {"matrix": self.reviews.prepare(project_id, "", None),
-                   "search_runs": [{k: v for k, v in q.items() if k != "cached"} for q in self.store.all("query")
+        package = {"search_runs": [{k: v for k, v in q.items() if k != "cached"} for q in self.store.all("query")
                                    if q["snapshot"]["project_id"] == project_id],
-                   "screening": decisions, "overrides": [], "reviews": [],
+                   "screening": decisions, "overrides": [],
                    "bibliography": [self.library.present(p) for p in papers],
                    "run": {"service_version": __version__, "config_digest": self.config_digest, "at": now(),
                            "model_calls": 0, "jobs": [self.jobs.present(j) for j in self.store.all("job")
-                            if j["arguments"].get("project_id") == project_id or j["arguments"].get("asset_id") in {
-                                a["id"] for a in self.store.all("asset") if a["version_id"] in ids}]}}
+                            if (include_review or j["operation"] not in {"prepare_review_v2", "prepare_synthesis"}) and
+                            (j["arguments"].get("project_id") == project_id or j["arguments"].get("asset_id") in {
+                                a["id"] for a in self.store.all("asset") if a["version_id"] in ids})]}}
         decision_ids = {d["id"] for d in decisions}
         for override in self.store.all("override"):
             if override["decision_id"] in decision_ids:
                 paper = self.store.get(self.store.get(override["decision_id"], "decision")["version_id"], "version")
                 package["overrides"].append({**override, "reason": protected(override["reason"], "review", paper["rights"])})
-        for review in self.store.all("review"):
-            if review["project_id"] == project_id:
-                package["reviews"].append({"id": review["id"], "body": self.reviews.protect_review(review["body"], review["rights"]),
-                                           "validation": review["validation"]})
-        output = self.store.root / "exports" / f"{uid('project')}.json"
-        output.write_text(json.dumps(self.gate.output(package), ensure_ascii=False, indent=2), encoding="utf-8")
-        return {"path": str(output), "content_policy_applied": True}
+        if include_review:
+            package["reviews"] = [{"id": r["id"], "body": self.reviews.protect_review(r["body"], r["rights"]),
+                                   "validation": r["validation"]} for r in self.store.all("review") if r["project_id"] == project_id]
+            package.update(self.review_exporter.build(project_id, review_revision_ids, style))
+        return self.review_exporter.write(package, format)
 
     @endpoint
     async def sync_zotero(self, version_ids: IDS, collection_id: str | None = None) -> dict:
@@ -728,6 +746,10 @@ class Application:
     @endpoint
     async def resume_job(self, job_id: ID, session_id: str | None = None) -> dict:
         """显式恢复失败或中断任务；下载重新核验会话与许可，已成功任务不重复执行。"""
+        job = self.store.get(job_id, "job")
+        if job["operation"] in {"prepare_review_v2", "prepare_synthesis"} and job["state"] in {"failed", "waiting_for_user"}:
+            project = self.review_workspace.project(job["arguments"]["project_id"], writing=True)
+            self.store.put("job", {**job, "resume_generation": project.get("review_generation", 0)})
         return self.jobs.resume(job_id, session_id)
 
     @endpoint
@@ -737,6 +759,7 @@ class Application:
 
 
 TOOL_NAMES = [
+    "get_review_impact",
     "prepare_synthesis", "save_synthesis", "save_review_check",
     "set_review_assistance", "save_review_plan", "create_corpus_snapshot", "save_paper_card",
     "get_review_progress", "get_review_artifact",

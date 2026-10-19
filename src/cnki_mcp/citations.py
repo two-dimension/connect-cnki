@@ -143,3 +143,24 @@ def export_manifest(papers: list[dict], format: str, style: str, style_path: Pat
             "missing_fields": {p["id"]: [key for key in ("authors", "year", "source", "volume", "issue", "pages")
                                          if not p.get(key)] for p in papers},
             "validation": "pilot_golden_set_pending"}
+
+
+def render_review(papers: list[dict], citation_ids: list[str], style_path: Path) -> dict:
+    """Render citations and bibliography in ONE CSL engine with first-use item order."""
+    require(style_path.is_file(), "STYLE_UNAVAILABLE", "请求的 CSL 样式不可用。")
+    if not papers:
+        return {"text": "", "citations": [], "entry_ids": []}
+    node = shutil.which("node")
+    require(node, "RENDERER_UNAVAILABLE", "统一引文导出需要本地 Node.js 与 citeproc。")
+    try:
+        result = subprocess.run([node, str(Path(__file__).parent / "js" / "render.cjs")],
+            input=json.dumps({"items": [csl_record(p) for p in papers], "citations": citation_ids,
+                              "style": style_path.read_text(encoding="utf-8")}, ensure_ascii=False),
+            capture_output=True, text=True, encoding="utf-8", timeout=30,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+        require(result.returncode == 0, "RENDERER_UNAVAILABLE", "统一引文渲染失败。")
+        rendered = json.loads(result.stdout)
+        require(len(rendered["citations"]) == len(citation_ids), "RENDERER_UNAVAILABLE", "正文引文渲染不完整。")
+        return rendered
+    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError):
+        raise AppError("RENDERER_UNAVAILABLE", "统一引文渲染不可用或超时。") from None

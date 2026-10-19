@@ -19,7 +19,9 @@ try {
   engine.updateItems(input.items.map(item => item.id));
   const bibliography = engine.makeBibliography();
   if (!bibliography || !Array.isArray(bibliography[1])) throw new Error("No bibliography");
-  process.stdout.write(JSON.stringify({text: bibliography[1].map(line => line.trim()).join("\n")}));
+  const citations = (input.citations || []).map(id => engine.makeCitationCluster([{id}]));
+  process.stdout.write(JSON.stringify({text: bibliography[1].map(line => line.trim()).join("\n"),
+    citations, entry_ids: bibliography[0].entry_ids}));
 } catch (_) {
   // Never echo records, paths, style content or processor errors to MCP/logs.
   process.stderr.write("CSL_RENDER_FAILED\n");

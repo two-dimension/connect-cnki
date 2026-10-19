@@ -54,6 +54,11 @@ class PolicyGate:
 
     def output(self, value):
         if isinstance(value, dict):
+            if "_protected_all" in value:
+                for requirement in value["_protected_all"]:
+                    if not self.can_output(requirement["content_class"], requirement["rights"]):
+                        return {"withheld": True, "content_class": requirement["content_class"], "reason": "OUTPUT_POLICY"}
+                return self.output(value["value"])
             if "_protected" in value:
                 content_class = value["_protected"]
                 if self.can_output(content_class, value["rights"]):
@@ -67,3 +72,10 @@ class PolicyGate:
 
 def protected(value, content_class: str, rights: dict) -> dict:
     return {"_protected": content_class, "rights": rights, "value": value}
+
+
+def protected_all(value, requirements: list[dict]) -> dict:
+    # Flat conjunction avoids recursion depth proportional to the number of cited sources.
+    from .core import digest
+    unique = {digest(r): r for r in requirements}
+    return {"_protected_all": list(unique.values()), "value": value}

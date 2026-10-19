@@ -15,8 +15,7 @@ class ReviewEvidence:
     def _sections(self, project_id, snapshot_id, version_id, section_name):
         if not section_name:
             return None
-        cards = [c for c in self.workspace.heads(project_id, "paper_card")
-                 if c["content"]["snapshot_id"] == snapshot_id and c["content"]["version_id"] == version_id]
+        cards = [c for c in self.workspace.cards_for_snapshot(project_id, snapshot_id) if c["content"]["version_id"] == version_id]
         ranges = [s for c in cards for s in c["content"]["sections"] if s["name"] == section_name]
         require(ranges, "SECTION_RANGE_UNKNOWN", "没有已登记的该章节页段。")
         return {p for s in ranges for p in range(s["page_from"], s["page_to"] + 1)}

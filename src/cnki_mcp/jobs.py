@@ -48,15 +48,19 @@ class Jobs:
                            recovery_reason=result.pop("_recovery_reason", None), result=result)
                 self.store.put("job", job)
         except asyncio.CancelledError:
+            job = self.store.get(job_id, "job")
             job.update(state="waiting_for_user" if self.stopping else "cancelled",
-                       checkpoint="interrupted" if self.stopping else "cancelled")
+                       checkpoint=job["checkpoint"] if isinstance(job.get("checkpoint"), dict)
+                       else "interrupted" if self.stopping else "cancelled")
             self.store.put("job", job)
         except AppError as error:
+            job = self.store.get(job_id, "job")
             job.update(state="waiting_for_user" if error.action else "failed",
                        error={"code": error.code, "message": error.message, "user_action": error.action,
                               "retryable": error.retryable, "requires_user_action": bool(error.action)})
             self.store.put("job", job)
         except Exception:
+            job = self.store.get(job_id, "job")
             job.update(state="failed", error={"code": "INTERNAL_ERROR", "message": "任务执行失败。",
                                                "retryable": False, "requires_user_action": False, "user_action": ""})
             self.store.put("job", job)
@@ -70,9 +74,12 @@ class Jobs:
             self.tasks.pop(job_id, None)
 
     def present(self, job: dict) -> dict:
-        return {key: job.get(key) for key in (
+        result = {key: job.get(key) for key in (
             "id", "operation", "state", "progress", "result", "error", "checkpoint", "recovery_reason",
         )}
+        if job["operation"] in {"prepare_review_v2", "prepare_synthesis"} and isinstance(result["checkpoint"], dict):
+            result["checkpoint"] = {k: result["checkpoint"].get(k) for k in ("next_index", "remaining")}
+        return result
 
     async def cancel(self, job_id: str) -> dict:
         job = self.store.get(job_id, "job")

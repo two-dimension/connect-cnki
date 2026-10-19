@@ -52,7 +52,7 @@ async def test_import_read_review_and_all_exports(app, paper, rights):
         assert "Fixture power prediction" in exported["data"]["content"]
         assert "PRIVATE_ABSTRACT" not in exported["data"]["content"]
     assert (await app.export_bibliography([version], "text", "gbt-7714-2015"))["status"] == "succeeded"
-    package = await app.export_project(project)
+    package = await app.export_project(project, include_review=True)
     assert package["status"] == "succeeded"
     assert json.loads(open(package["data"]["path"], encoding="utf-8").read())["reviews"]
     assert (await app.read_paper(version, [3]))["error"]["code"] == "INVALID_ARGUMENT"

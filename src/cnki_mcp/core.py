@@ -177,7 +177,7 @@ class Store:
 
     def all(self, kind: str) -> list[dict]:
         return [json.loads(row[0]) for row in self.db.execute(
-            "SELECT body FROM records WHERE kind=? ORDER BY created_at,id", (kind,)
+            "SELECT body FROM records WHERE kind=? ORDER BY created_at,rowid", (kind,)
         )]
 
     def link(self, project_id: str, version_id: str) -> None:
@@ -187,7 +187,7 @@ class Store:
         self.get(project_id, "project")
         return [json.loads(row[0]) for row in self.db.execute(
             "SELECT r.body FROM project_papers p JOIN records r ON r.id=p.version_id "
-            "WHERE p.project_id=? ORDER BY r.created_at,r.id", (project_id,)
+            "WHERE p.project_id=? ORDER BY r.created_at,r.rowid", (project_id,)
         )]
 
     def recover_interrupted(self) -> None:

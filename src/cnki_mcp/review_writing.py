@@ -31,6 +31,7 @@ class ReviewWriting:
         return proposed or uid(prefix)
 
     def save_synthesis(self, project_id: str, snapshot_id: str, synthesis: SynthesisInput, **revision):
+        self.workspace.project(project_id, writing=True)
         snapshot = self.workspace.corpus(project_id, snapshot_id)
         dependencies, rights, _ = self.dependencies(project_id, snapshot, synthesis.plan_id, synthesis.card_ids)
         previous = self.workspace.get(project_id, revision["entity_id"], "synthesis") if revision.get("entity_id") else None
@@ -92,6 +93,7 @@ class ReviewWriting:
                 "uncertainties": re.findall(r"可能|或许|推测|\bmay\b|\bmight\b", text)}
 
     def save_section(self, project_id: str, snapshot_id: str, body: str, section: ReviewSectionInput, **revision):
+        self.workspace.project(project_id, writing=True)
         snapshot = self.workspace.corpus(project_id, snapshot_id)
         dependencies, rights, records = self.dependencies(project_id, snapshot, section.plan_id, section.card_ids, section.synthesis_ids)
         claims = {c["claim_id"]: c for r in records if r["kind"] == "synthesis" for c in r["content"]["claims"]}
@@ -115,15 +117,16 @@ class ReviewWriting:
             require(set(paragraph.claim_ids) <= claims.keys(), "UNKNOWN_CLAIM", "段落关联的论断不在所选综合版本中。")
             saved.append({**paragraph.model_dump(), "paragraph_id": paragraph_id,
                           "authored_by": old["authored_by"] if old and old["text"] == paragraph.text else revision.get("actor_role", "agent")})
-            previous_sentences = {s["text"]: s["sentence_id"] for s in previous["content"]["sentence_inventory"]
+            previous_sentences = {(s["text"], s["offset"]): s["sentence_id"] for s in previous["content"]["sentence_inventory"]
                                   if s["paragraph_id"] == paragraph_id} if previous else {}
             for match in re.finditer(r".+?(?:[。！？!?]+|(?<!\d)\.(?=\s|$)|$)", paragraph.text, re.S):
                 text = match.group().strip()
                 if not text:
                     continue
                 mapped = [c for c in paragraph.claim_ids if claims[c]["text"] in text]
-                inventory.append({"sentence_id": previous_sentences.get(text) or uid("sentence"), "paragraph_id": paragraph_id,
-                    "text": text, "offset": match.start(), "mapped_claim_ids": mapped, "disposition": "unresolved",
+                offset = match.start() + len(match.group()) - len(match.group().lstrip())
+                inventory.append({"sentence_id": previous_sentences.get((text, offset)) or uid("sentence"), "paragraph_id": paragraph_id,
+                    "text": text, "offset": offset, "mapped_claim_ids": mapped, "disposition": "unresolved",
                     "status": "needs_review", "risk_signals": [name for name, values in self.fact_signature(text).items() if values]
                         + (["causal_or_gap_language"] if re.search(r"导致|因果|首次|无人|所有|多数|caus|first|all studies", text, re.I) else [])})
         missing_user = [p for p in old_paragraphs.values() if p["authored_by"] == "user" and p["paragraph_id"] not in used_ids]
@@ -141,7 +144,7 @@ class ReviewWriting:
             "substantive_fact_coverage": "not_certified", "support_status": "not_certified", "requires_review": True,
             "fact_signature_changed": bool(previous and previous["content"]["fact_signature"] != signature),
             "language_pass_requires_fact_recheck": bool(previous and section.editing_pass == "language"
-                                                       and previous["content"]["fact_signature"] != signature)}
+                                                       and previous["content"]["body"] != body)}
         record = self.workspace.revision(project_id, "review_section", {**section.model_dump(), "snapshot_id": snapshot["id"],
             "body": body, "paragraphs": saved, "sentence_inventory": inventory, "claims": list(claims.values()),
             "validation": validation, "fact_signature": signature, "writing_rules_version": WRITING_VERSION,
@@ -149,6 +152,7 @@ class ReviewWriting:
         return self.workspace.present(record)
 
     def save_check(self, project_id: str, section_id: str, check: ReviewCheckInput, **revision):
+        self.workspace.project(project_id, writing=True)
         section = self.workspace.get(project_id, section_id, "review_section")
         snapshot = self.workspace.corpus(project_id, section["content"]["snapshot_id"])
         actor = revision.get("actor_role", "agent")

@@ -122,7 +122,7 @@ async def test_chinese_synonyms_context_and_budget_continuation(app, paper, righ
     project, version, snapshot, _, _ = await workspace(app, paper, rights)
     result = (await app.search_evidence(project, "预测", snapshot_id=snapshot, context_blocks=1))["data"]
     assert result["results"] and result["semantic_search"] == "not_enabled"
-    span = app.store.all("evidence")[0]
+    span = next(e for e in app.store.all("evidence") if e["pdf_page"] == 1)
     app.store.put("evidence", {**span, "offset": 0, "text": "甲" * 1200})
     app.store.put("evidence", {**span, "id": "evidence_overlap", "offset": 1000, "text": "甲" * 200 + "乙" * 1000})
     app.settings.max_read_chars = 1300

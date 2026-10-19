@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from .core import Store, digest, now, require, uid
 from .library import Library
-from .policy import PolicyGate, protected
+from .policy import PolicyGate, protected_all
 from .review_models import CorpusItemInput, EvidenceReference, PaperCardInput, ReviewPlanInput
 
 ARTIFACT_KINDS = {"review_plan", "corpus_snapshot", "paper_card", "synthesis", "review_section", "review_check", "reading_progress"}
@@ -24,7 +24,7 @@ class ReviewWorkspace:
         # Indexed scope lookup, without loading other projects' source content.
         import json
         return [json.loads(row[0]) for row in self.store.db.execute(
-            "SELECT body FROM records WHERE kind=? AND json_extract(body,'$.project_id')=? ORDER BY created_at,id",
+            "SELECT body FROM records WHERE kind=? AND json_extract(body,'$.project_id')=? ORDER BY created_at,rowid",
             (kind, project_id))]
 
     def get(self, project_id: str, record_id: str, kind: str | None = None):
@@ -40,6 +40,15 @@ class ReviewWorkspace:
     def heads(self, project_id: str, kind: str | None = None):
         return [self.store.get(h["current_revision_id"]) for h in self.records(project_id, "review_head")
                 if kind is None or h["artifact_kind"] == kind]
+
+    def cards_for_snapshot(self, project_id: str, snapshot_id: str):
+        cards = []
+        for card in self.heads(project_id, "paper_card"):
+            while card["content"]["snapshot_id"] != snapshot_id and card.get("parent_revision_id"):
+                card = self.get(project_id, card["parent_revision_id"], "paper_card")
+            if card["content"]["snapshot_id"] == snapshot_id:
+                cards.append(card)
+        return cards
 
     def revision(self, project_id: str, kind: str, content: dict, *, entity_id: str | None = None,
                  parent_revision_id: str | None = None, actor_role: str = "agent", reason: str = "initial",
@@ -61,7 +70,7 @@ class ReviewWorkspace:
         record = self.store.put(kind, {"project_id": project_id, "kind": kind, "entity_id": entity_id,
             "parent_revision_id": parent_revision_id, "content": content, "actor_role": actor_role,
             "actor_provenance": "caller_declared", "reason": reason, "at": now(),
-            "dependencies": dependencies, "rights": rights or [], "content_digest": digest(content)})
+            "dependencies": dependencies, "rights": list({digest(r): r for r in rights or []}.values()), "content_digest": digest(content)})
         self.store.put("review_head", {"project_id": project_id, "artifact_kind": kind,
             "current_revision_id": record["id"]}, entity_id)
         for source in dependencies:
@@ -87,16 +96,39 @@ class ReviewWorkspace:
 
     def present(self, record: dict):
         header = {k: v for k, v in record.items() if k not in {"rights", "content", "reason"}}
-        invalidations = [r for r in self.records(record["project_id"], "review_invalidation")
-                         if r["affected_id"] == record["id"]]
-        header["current_dependency_status"] = "outdated" if invalidations else "unchanged"
+        header["current_dependency_status"] = "outdated" if self.is_outdated(record) else "unchanged"
         content = {"value": record["content"], "change_reason": record["reason"]}
         if record["kind"] == "corpus_snapshot":
             content["value"] = {**record["content"], "items": [self.present_item(i) for i in record["content"]["items"]]}
         elif record["kind"] not in {"review_plan", "reading_progress"}:
-            for rights in record["rights"] or [{}]:
-                content = protected(content, "review", rights)
+            content = self.protect_content(record, content)
         return {**header, "content": content}
+
+    def is_outdated(self, record):
+        invalidated = {r["affected_id"] for r in self.records(record["project_id"], "review_invalidation")}
+        pending, seen = [record["id"]], set()
+        while pending:
+            record_id = pending.pop()
+            if record_id in invalidated:
+                return True
+            if record_id not in seen:
+                seen.add(record_id)
+                pending.extend(self.store.get(record_id).get("dependencies", []))
+        return False
+
+    def requirements(self, record):
+        levels = []
+        if record["kind"] == "paper_card":
+            levels = [r["reading_level"] for f in record["content"]["fields"] for r in f["references"]]
+        if not levels and record["content"].get("snapshot_id"):
+            snapshot = self.get(record["project_id"], record["content"]["snapshot_id"], "corpus_snapshot")
+            levels = [i["reading_level"] for i in snapshot["content"]["items"]]
+        classes = {"review"} | {"fulltext" if level == "fulltext" else "abstract" for level in levels if level != "metadata_only"}
+        return [{"content_class": content_class, "rights": rights}
+                for rights in record["rights"] or [{}] for content_class in sorted(classes)]
+
+    def protect_content(self, record, content):
+        return protected_all(content, self.requirements(record))
 
     def present_item(self, item: dict):
         clean = {k: v for k, v in item.items() if k not in {"bibliography", "metadata_rights", "fulltext_rights"}}
@@ -116,6 +148,7 @@ class ReviewWorkspace:
                 "history_preserved": True, "base_jobs_affected": False}
 
     def save_plan(self, project_id: str, plan: ReviewPlanInput, **revision):
+        self.project(project_id, writing=True)
         ids = {p["id"] for p in self.store.papers(project_id)}
         require(set(plan.seed_version_ids) <= ids, "PROJECT_MISMATCH", "种子文献不属于该项目。")
         for query_id in plan.executed_query_ids:
@@ -209,8 +242,13 @@ class ReviewWorkspace:
         return resolved, rights, dependencies
 
     def save_card(self, project_id: str, snapshot_id: str, card: PaperCardInput, **revision):
+        self.project(project_id, writing=True)
         snapshot = self.corpus(project_id, snapshot_id)
         item = self.item(snapshot, card.version_id)
+        require(len({f.name for f in card.fields}) == len(card.fields), "INVALID_ARGUMENT", "文献卡字段名称重复。")
+        if not revision.get("entity_id"):
+            require(not any(c["content"]["version_id"] == card.version_id for c in self.heads(project_id, "paper_card")),
+                    "REVISION_CONFLICT", "该文献已有阅读卡，请读取后显式修订。")
         fields, rights, dependencies = [], [], [snapshot["id"]]
         for field in card.fields:
             require(all(r.version_id == card.version_id for r in field.references), "EVIDENCE_MISMATCH", "文献卡不能绑定其他论文的字段证据。")
@@ -253,6 +291,24 @@ class ReviewWorkspace:
         snapshot = self.corpus(project_id, None) if project.get("review_snapshot_id") else None
         selected = snapshot["content"]["items"] if snapshot else []
         current_cards = [c for c in cards if snapshot and c["content"]["snapshot_id"] == snapshot["id"]]
+        sections = self.heads(project_id, "review_section")
+        checks = self.heads(project_id, "review_check")
+        section_progress = []
+        for section in sections:
+            active_checks = [c for c in checks if c["content"]["section_revision_id"] == section["id"]
+                             and self.present(c)["current_dependency_status"] == "unchanged"]
+            queue = []
+            for sentence in section["content"]["sentence_inventory"]:
+                dispositions = {role: [a for c in active_checks if c["actor_role"] == role
+                                      for a in c["content"]["sentence_assessments"] if a["sentence_id"] == sentence["sentence_id"]]
+                                for role in ("agent", "user")}
+                queue.append({"sentence_id": sentence["sentence_id"], "paragraph_id": sentence["paragraph_id"],
+                    "model_disposition": dispositions["agent"][-1]["disposition"] if dispositions["agent"] else "unresolved",
+                    "user_disposition": dispositions["user"][-1]["disposition"] if dispositions["user"] else "unresolved",
+                    "mapped_claim_ids": sentence["mapped_claim_ids"], "risk_signals": sentence["risk_signals"]})
+            section_progress.append({"section_id": section["entity_id"], "revision_id": section["id"],
+                "dependency_status": self.present(section)["current_dependency_status"], "check_ids": [c["id"] for c in active_checks],
+                "sentence_queue": queue, "semantic_support_certified": False})
         return {"project_id": project_id, "enabled": project.get("review_assistance_enabled", False),
             "snapshot_id": snapshot["id"] if snapshot else None,
             "artifact_counts": {k: len(self.heads(project_id, k)) for k in sorted(ARTIFACT_KINDS)},
@@ -263,4 +319,10 @@ class ReviewWorkspace:
                         "extracted": sum(f["value"] is not None for f in c["content"]["fields"]),
                         "human_checked": sum(f["human_checked"] for f in c["content"]["fields"])} for c in current_cards],
             "returned_ranges": [r["content"] for r in self.heads(project_id, "reading_progress")],
+            "sections": section_progress,
+            "next_actions": (["enable_explicitly_before_enhanced_writes"] if not project.get("review_assistance_enabled", False) else [])
+                + (["create_corpus_snapshot"] if not snapshot else [])
+                + (["read_and_save_missing_paper_cards"] if len(current_cards) < len(selected) else [])
+                + (["prepare_one_section"] if current_cards and not sections else [])
+                + (["review_sentence_queue_and_core_claims"] if sections else []),
             "understanding_certified": False, "automatic_work_started": False}
