@@ -69,7 +69,7 @@ class CNKIProvider:
         validate_url(page.url, profile.provider_hosts)
         require(not any(x in urlsplit(page.url).path.casefold() for x in ("login", "saml", "callback")),
                 "SESSION_EXPIRED", "来源已转到认证页面。")
-        require(not await page.locator('input[type="password"]').count(),
+        require(not await page.locator('input[type="password"]:visible').count(),
                 "USER_INTERACTION_REQUIRED", "请在浏览器中完成认证。")
         # Fixed visible status phrases; never return complete DOM or provider exception text.
         text = await page.locator("body").inner_text()

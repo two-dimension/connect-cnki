@@ -78,6 +78,17 @@ async def test_real_browser_synthetic_search_pagination_and_identity(app):
         diagnostic = await app.access.inspect(sid)
         assert diagnostic["pages"][0]["institution_candidates"][0]["selector_candidates"] == ["div.institution"]
         assert not diagnostic["identity_verified"]  # A diagnostic never marks an arbitrary matching body label ready.
+        # The real header embeds an unopened login panel. Hidden fields do not make
+        # the whole provider page an authentication form; values remain unread.
+        profile.selectors.institution_label = ".institution"
+        await page.set_content('<input type="password" hidden value="PRIVATE_HIDDEN_PASSWORD"><div class="institution">厦门大学</div>')
+        diagnostic = await app.access.inspect(sid)
+        assert diagnostic["pages"][0]["kind"] == "provider"
+        assert "PRIVATE_HIDDEN_PASSWORD" not in str(diagnostic)
+        assert (await app.verify_access_session(sid))["data"]["state"] == "ready"
+        await page.locator(".institution").evaluate("element => element.hidden = true")
+        assert (await app.verify_access_session(sid))["data"]["state"] != "ready"
+        await page.locator(".institution").evaluate("element => element.hidden = false")
         # Login DOM, query assertions and password values never enter the diagnostic.
         await page.set_content('<input type="password" value="PRIVATE_PASSWORD"><div class="institution">厦门大学</div>')
         diagnostic = await app.access.inspect(sid)

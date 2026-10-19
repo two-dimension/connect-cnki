@@ -17,13 +17,13 @@
       "display_names": ["厦门大学", "Xiamen University"],
       "access_modes": ["institution_network", "carsi"],
       "entry_urls": {
-        "institution_network": "https://kns.cnki.net/kns8s/",
+        "institution_network": "https://www.cnki.net/",
         "carsi": "https://fsso.cnki.net/Shibboleth.sso/Login?entityID=https%3A%2F%2Fidp.xmu.edu.cn%2Fidp%2Fshibboleth&target=https://fsso.cnki.net/secure/default.aspx"
       },
       "search_url": "https://kns.cnki.net/kns8s/",
-      "allowed_hosts": ["kns.cnki.net", "www.cnki.net", "fsso.cnki.net", "idp.xmu.edu.cn"],
+      "allowed_hosts": ["kns.cnki.net", "www.cnki.net", "fsso.cnki.net", "idp.xmu.edu.cn", "login.cnki.net"],
       "provider_hosts": ["kns.cnki.net", "www.cnki.net", "fsso.cnki.net"],
-      "resource_hosts": ["piccache.cnki.net"],
+      "resource_hosts": ["piccache.cnki.net", "turing.captcha.qcloud.com", "turing.captcha.gtimg.com"],
       "selectors": {
         "institution_label": ""
       },

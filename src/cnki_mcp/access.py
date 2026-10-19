@@ -151,7 +151,7 @@ class BrowserAccess:
                     item["kind"] = "authentication"
                     pages.append(item)
                     continue
-                if await page.locator('input[type="password"]').count():
+                if await page.locator('input[type="password"]:visible').count():
                     item["kind"] = "authentication"
                     pages.append(item)
                     continue
@@ -221,7 +221,7 @@ class BrowserAccess:
                     continue
                 if any(x in urlsplit(page.url).path.casefold() for x in ("login", "saml", "callback", "auth")):
                     continue
-                if await page.locator('input[type="password"]').count():
+                if await page.locator('input[type="password"]:visible').count():
                     continue
                 safety = page.get_by_text("安全验证", exact=True)
                 if "安全验证" in await page.title() or (
@@ -237,10 +237,15 @@ class BrowserAccess:
                     code = "INSTITUTION_UNVERIFIED"
                     continue
                 labels = page.locator(profile.selectors.institution_label)
-                if not await labels.count():
+                visible = None
+                for index in range(await labels.count()):
+                    if await labels.nth(index).is_visible():
+                        visible = labels.nth(index)
+                        break
+                if visible is None:
                     code = "INSTITUTION_UNVERIFIED"
                     continue
-                label = (await labels.first.inner_text()).strip()
+                label = (await visible.inner_text()).strip()
                 if label in profile.display_names:
                     detected, state, code = label, "ready", None
                     break
