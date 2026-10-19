@@ -7,12 +7,17 @@ import pytest
 from playwright.async_api import async_playwright
 
 from cnki_mcp.config import Institution, PolicyRecord, Selectors
+from cnki_mcp.core import AppError
 from cnki_mcp.models import SearchQuery
 
 
 @pytest.mark.browser
 async def test_real_browser_synthetic_search_pagination_and_identity(app):
     fixture = (Path(__file__).parent / "fixtures" / "cnki_synthetic.html").read_text(encoding="utf-8")
+    fixture = fixture.replace('<input id="txt_SearchText">', '''<div class="search-main">
+        <div class="sort-default" onclick="document.querySelector('#fixture-fields').hidden=false"><span>主题</span></div>
+        <ul id="fixture-fields" hidden><li><a onclick="document.querySelector('.sort-default span').textContent='篇名'; this.parentElement.parentElement.hidden=true">篇名</a></li></ul>
+        <input id="txt_SearchText">''').replace('</button>\n<table', '</button></div>\n<table', 1)
     fixture = fixture.replace("</html>", '''<ul><li id="fixture-relevance"
         onclick="this.className='cur'; setTimeout(()=>render(1),70)">相关度</li></ul></html>''')
     app.settings.browser_headless = True
@@ -21,7 +26,10 @@ async def test_real_browser_synthetic_search_pagination_and_identity(app):
         entry_urls={"institution_network": "https://fixture.example/", "carsi": "https://fixture.example/"},
         search_url="https://fixture.example/", allowed_hosts=["fixture.example"], provider_hosts=["fixture.example"],
         selectors=Selectors(institution_label=".institution", default_sort="latest", sort_active_class="cur",
-                            sort_controls={"relevance": "#fixture-relevance"}),
+                            sort_controls={"relevance": "#fixture-relevance"},
+                            search_field_trigger=".search-main .sort-default", search_field_label=".search-main .sort-default > span",
+                            search_fields={"title": '.search-main a:text-is("篇名")'},
+                            search_field_labels={"subject": "主题", "title": "篇名"}),
         policy_records=[PolicyRecord(operation=operation, state="allowed", source="Synthetic test permission",
             verified_by="test_suite", verified_at=datetime.now(UTC) - timedelta(days=1),
             expires_at=datetime.now(UTC) + timedelta(days=1), resource_types=["*"], min_interval_seconds=0.1)
@@ -77,6 +85,10 @@ async def test_real_browser_synthetic_search_pagination_and_identity(app):
         assert third["data"]["pages_read"] == 2, third
         assert third["data"]["stop_reason"] == "source_end"
         assert {p["title"] for p in third["data"]["papers"]} == {"Fixture paper 21", "Fixture paper 22"}
+        titled = await app.search_papers(project, sid, SearchQuery(text="fixture title query", field="title"), limit=1)
+        assert titled["status"] == "succeeded", titled
+        query_page = app.access.query_pages[titled["data"]["query_id"]]
+        assert await query_page.locator(".search-main .sort-default > span").inner_text() == "篇名"
         # A public homepage and any school name in arbitrary body text must not pass identity checks.
         await page.locator(".institution").evaluate("element => element.textContent = '其他大学'")
         for extra in context.pages[1:]:
@@ -151,6 +163,14 @@ async def test_browser_upgrades_solved_challenge_return_without_http_egress(app)
 
         async def server_fixture(route):
             received.append(route.request.url)
+            if route.request.url.endswith("/external-redirect"):
+                await route.fulfill(status=302, headers={
+                    "location": "https://unapproved.fixture.example/login?SAMLRequest=PRIVATE_REDIRECT_ASSERTION"})
+                return
+            if route.request.url.endswith("/http-return-redirect"):
+                await route.fulfill(status=302, headers={
+                    "location": "http://fixture.example/kns8s/?captchaId=PRIVATE_NATIVE_RETURN"})
+                return
             await route.fulfill(status=200, content_type="text/html", body="<p>Synthetic return completed</p>")
 
         await context.route("**/*", server_fixture)
@@ -172,5 +192,17 @@ async def test_browser_upgrades_solved_challenge_return_without_http_egress(app)
             await page.locator("body").evaluate(
                 "body => {const image = new Image(); image.src = 'https://static.fixture.example/image.png'; body.append(image)}")
         assert received[-1] == "https://static.fixture.example/image.png"
+        await page.goto("https://fixture.example/kns8s/http-return-redirect", wait_until="domcontentloaded")
+        await page.wait_for_url("https://fixture.example/kns8s/?captchaId=PRIVATE_NATIVE_RETURN", wait_until="domcontentloaded")
+        assert received[-1] == "https://fixture.example/kns8s/?captchaId=PRIVATE_NATIVE_RETURN"
+        assert not any(url.startswith("http:") for url in received)
+        assert not app.access.guard_errors.get("fixture_session")
+        with pytest.raises(AppError) as failure:
+            await app.provider.goto(page, "https://fixture.example/kns8s/external-redirect", updated.institutions[0], "fixture_session")
+        assert failure.value.code == "HOST_NOT_ALLOWED"
+        assert sum(url.endswith("/external-redirect") for url in received) == 1
+        assert "unapproved.fixture.example" in app.access.blocked_hosts["fixture_session"]["navigation"]
+        assert "fixture_session" in app.access.blocked
+        assert "PRIVATE_REDIRECT_ASSERTION" not in str(await app.access.inspect("fixture_session"))
         await browser.close()
         app.access.contexts.clear()

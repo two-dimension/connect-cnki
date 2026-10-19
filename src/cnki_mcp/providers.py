@@ -106,7 +106,7 @@ class CNKIProvider:
         if "安全验证" in await page.title() or any(word in text for word in ("请输入验证码", "安全验证", "拖动滑块")):
             raise AppError("USER_INTERACTION_REQUIRED", "来源需要验证码或安全验证。", "请在浏览器中亲自操作。")
 
-    async def goto(self, page, url: str, profile: Institution):
+    async def goto(self, page, url: str, profile: Institution, session_id: str):
         validate_url(url, profile.provider_hosts)
         from playwright.async_api import Error, TimeoutError
 
@@ -123,6 +123,7 @@ class CNKIProvider:
                 require(not response or response.status < 400, "PROVIDER_UNAVAILABLE", "来源返回访问错误。")
                 return
             except (TimeoutError, Error):
+                self.access.assert_not_blocked(session_id)
                 if attempt == 2:
                     raise AppError("NETWORK_NOT_READY", "网络访问失败。", "检查校园网或 VPN。", True) from None
                 await asyncio.sleep(2 ** attempt)
@@ -143,20 +144,27 @@ class CNKIProvider:
         if page_number == 1:
             page = await context.new_page()
             self.access.query_pages[query_id] = page
-            await self.goto(page, profile.search_url, profile)
+            await self.goto(page, profile.search_url, profile, session_id)
             await self.guard_page(page, profile, session_id)
-            from playwright.async_api import TimeoutError
+            from playwright.async_api import Error
 
             try:
                 if query.field != "subject":
+                    if selectors.search_field_trigger:
+                        trigger = page.locator(selectors.search_field_trigger)
+                        await trigger.wait_for(state="visible")
+                        await trigger.hover()
+                        if not await page.locator(selectors.search_fields[query.field]).is_visible():
+                            await trigger.click()
                     await page.locator(selectors.search_fields[query.field]).click()
+                await self.verify_field(page, profile, query.field)
                 for key, value in controls.items():
                     control = page.locator(selectors.filter_controls[key])
                     await control.fill(str(value) if not isinstance(value, list) else ";".join(value))
                 await page.locator(selectors.search_input).fill(query.text)
                 await page.locator(selectors.search_button).click()
                 await page.wait_for_load_state("domcontentloaded")
-            except TimeoutError:
+            except Error:
                 await self.guard_page(page, profile, session_id)
                 raise AppError("SOURCE_LAYOUT_CHANGED", "检索控件未按预期出现或完成操作，请更新入口适配。") from None
         else:
@@ -180,6 +188,7 @@ class CNKIProvider:
             await self.guard_page(page, profile, session_id)
             raise AppError("SOURCE_LAYOUT_CHANGED", "结果等待超时或页面结构变化，停止采集。") from None
         await self.guard_page(page, profile, session_id)
+        await self.verify_field(page, profile, query.field)
         if page_number == 1 and sort != selectors.default_sort:
             await self.apply_sort(page, profile, session_id, sort)
         if selectors.sort_active_class and sort in selectors.sort_controls:
@@ -196,6 +205,16 @@ class CNKIProvider:
                         and await next_button.first.is_enabled()
                         and "disabled" not in ((await next_button.first.get_attribute("class")) or "").lower())
         return records, has_next
+
+    async def verify_field(self, page, profile: Institution, field: str):
+        selectors = profile.selectors
+        if selectors.search_field_label:
+            expected = selectors.search_field_labels.get(field)
+            require(expected, "UNSUPPORTED_QUERY", "该检索字段尚无核验标签。")
+            label = page.locator(selectors.search_field_label)
+            await label.wait_for(state="visible")
+            require(await label.count() == 1 and (await label.inner_text()).strip() == expected,
+                    "SOURCE_LAYOUT_CHANGED", "来源未保持所请求的检索字段，停止返回结果。")
 
     async def apply_sort(self, page, profile: Institution, session_id: str, sort: str):
         from playwright.async_api import Error
@@ -238,7 +257,7 @@ class CNKIProvider:
         await self.throttle(profile.institution_id, "metadata_collect")
         page = await context.new_page()
         try:
-            await self.goto(page, detail_url, profile)
+            await self.goto(page, detail_url, profile, session_id)
             await self.guard_page(page, profile, session_id)
             title = page.locator(profile.selectors.detail_title)
             require(await title.count(), "SOURCE_LAYOUT_CHANGED", "详情缺少预期题名。")
@@ -264,7 +283,7 @@ class CNKIProvider:
         await self.throttle(profile.institution_id, "fulltext_download")
         page = await context.new_page()
         try:
-            await self.goto(page, detail_url, profile)
+            await self.goto(page, detail_url, profile, session_id)
             await self.guard_page(page, profile, session_id)
             selectors = profile.selectors
             if selectors.not_subscribed and await page.locator(selectors.not_subscribed).count():

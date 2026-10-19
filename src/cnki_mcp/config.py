@@ -74,6 +74,9 @@ class Selectors(StrictModel):
     sort_controls: dict[Literal["relevance", "latest", "cited"], str] = Field(default_factory=dict)
     filter_controls: dict[str, str] = Field(default_factory=dict)
     search_fields: dict[str, str] = Field(default_factory=dict)
+    search_field_trigger: str = ""
+    search_field_label: str = ""
+    search_field_labels: dict[str, str] = Field(default_factory=dict)
 
 
 class Institution(StrictModel):
@@ -85,6 +88,7 @@ class Institution(StrictModel):
     allowed_hosts: list[str] = Field(default_factory=list)
     provider_hosts: list[str] = Field(default_factory=list)
     resource_hosts: list[str] = Field(default_factory=list)
+    https_navigation_paths: dict[str, list[str]] = Field(default_factory=dict)
     selectors: Selectors = Field(default_factory=Selectors)
     policy_records: list[PolicyRecord] = Field(default_factory=list)
     subscriptions: list[str] = Field(default_factory=list)
@@ -98,6 +102,12 @@ class Institution(StrictModel):
         require(len({p.operation for p in self.policy_records}) == len(self.policy_records),
                 "CONFIG_INVALID", "每项操作只允许一条当前许可。")
         require(set(self.provider_hosts) <= set(self.allowed_hosts), "CONFIG_INVALID", "来源主机需在允许列表中。")
+        for host, paths in self.https_navigation_paths.items():
+            require(host in self.allowed_hosts and paths, "CONFIG_INVALID", "HTTPS 修正目标须为已核验主机及明确路径。")
+            for path in paths:
+                require(path.startswith("/") and not any(value in path for value in ("?", "#", "*", "..")),
+                        "CONFIG_INVALID", "HTTPS 修正只支持固定绝对路径。")
+                validate_url(f"https://{host}{path}", self.allowed_hosts)
         for url in [*self.entry_urls.values(), self.search_url]:
             if url:
                 validate_url(url, self.allowed_hosts)
@@ -178,14 +188,18 @@ def provider_https_upgrade(url: str, profile: Institution, method: str) -> str |
     """Canonicalize a provider's plain-HTTP GET return without sending it on the wire.
 
     CNKI can return from its human challenge to the configured KNS search path using
-    HTTP. Only that known provider/path is eligible. IdP, non-GET, foreign hosts and
-    nonstandard ports remain blocked. Opaque query bytes stay in the browser only.
+    HTTP. Only known provider paths or explicitly verified HTTPS navigation paths
+    are eligible. Non-GET, foreign hosts and nonstandard ports remain blocked.
+    Opaque query bytes stay in the browser only.
     """
     try:
         parts = urlsplit(url)
-        if (parts.scheme != "http" or parts.hostname not in profile.provider_hosts
-                or method != "GET" or parts.port not in (None, 80)
+        if (parts.scheme != "http" or method != "GET" or parts.port not in (None, 80)
                 or parts.username or parts.password):
+            return None
+        if parts.path in profile.https_navigation_paths.get(parts.hostname, []):
+            return validate_url(urlunsplit(("https", parts.hostname, parts.path, parts.query, parts.fragment)), profile.allowed_hosts)
+        if parts.hostname not in profile.provider_hosts:
             return None
         entries = [profile.search_url, profile.entry_urls.get("institution_network", "")]
         for entry in entries:

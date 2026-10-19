@@ -1,10 +1,14 @@
 {
   "data_dir": "./data",
-  "import_roots": ["./imports"],
+  "import_roots": [
+    "./imports"
+  ],
   "client": {
     "location": "external",
     "provider": "openai",
-    "allowed_content": ["metadata"]
+    "allowed_content": [
+      "metadata"
+    ]
   },
   "max_candidates": 100,
   "max_file_mb": 50,
@@ -14,20 +18,62 @@
   "institutions": [
     {
       "institution_id": "xmu",
-      "display_names": ["厦门大学", "Xiamen University"],
-      "access_modes": ["institution_network", "carsi"],
+      "display_names": [
+        "厦门大学",
+        "Xiamen University"
+      ],
+      "access_modes": [
+        "institution_network",
+        "carsi"
+      ],
       "entry_urls": {
         "institution_network": "https://www.cnki.net/",
         "carsi": "https://fsso.cnki.net/Shibboleth.sso/Login?entityID=https%3A%2F%2Fidp.xmu.edu.cn%2Fidp%2Fshibboleth&target=https://fsso.cnki.net/secure/default.aspx"
       },
       "search_url": "https://kns.cnki.net/kns8s/",
-      "allowed_hosts": ["kns.cnki.net", "www.cnki.net", "fsso.cnki.net", "idp.xmu.edu.cn", "login.cnki.net"],
-      "provider_hosts": ["kns.cnki.net", "www.cnki.net", "fsso.cnki.net"],
-      "resource_hosts": ["piccache.cnki.net", "turing.captcha.qcloud.com", "turing.captcha.gtimg.com"],
+      "allowed_hosts": [
+        "kns.cnki.net",
+        "www.cnki.net",
+        "fsso.cnki.net",
+        "idp.xmu.edu.cn",
+        "login.cnki.net",
+        "ids.xmu.edu.cn"
+      ],
+      "provider_hosts": [
+        "kns.cnki.net",
+        "www.cnki.net",
+        "fsso.cnki.net"
+      ],
+      "resource_hosts": [
+        "piccache.cnki.net",
+        "turing.captcha.qcloud.com",
+        "turing.captcha.gtimg.com",
+        "idsv6.xmu.edu.cn"
+      ],
+      "https_navigation_paths": {
+        "ids.xmu.edu.cn": [
+          "/authserver/login"
+        ]
+      },
       "selectors": {
         "institution_label": ".ecp_header_unitName",
         "search_input": "#txt_search",
         "search_button": "input.search-btn",
+        "search_field_trigger": ".sort-default",
+        "search_field_label": ".sort-default > span",
+        "search_field_labels": {
+          "subject": "主题",
+          "title": "篇名",
+          "keywords": "关键词",
+          "author": "作者",
+          "source": "文献来源"
+        },
+        "search_fields": {
+          "title": "a:text-is(\"篇名\")",
+          "keywords": "a:text-is(\"关键词\")",
+          "author": "a:text-is(\"作者\")",
+          "source": "a:text-is(\"文献来源\")"
+        },
         "default_sort": "latest",
         "sort_active_class": "cur",
         "sort_controls": {
@@ -37,23 +83,44 @@
         }
       },
       "subscriptions": [],
-      "verified_at": "2026-10-19T04:18:27+00:00",
-      "rules_version": "xmu-ip-header-2026-10-19",
+      "verified_at": "2026-10-19T10:40:17+00:00",
+      "rules_version": "xmu-kns8s-2026-10-19-v2",
       "guide_sources": [
         "https://library.xmu.edu.cn/zy/dzzy/xwfw/CARSI.htm",
         "https://library.xmu.edu.cn/zy/dzzy.htm",
         "https://vpn.xmu.edu.cn/",
+        "https://inc.xmu.edu.cn/info/1541/7851.htm",
         "https://www.cnki.net/",
         "https://login.cnki.net/tlogin/scripts/top.js",
         "https://login.cnki.net/tlogin/scripts/loginState.js"
       ],
-      "acceptance": "institution_network_identity_verified_search_and_carsi_pending",
+      "acceptance": "institution_network_search_and_abstract_verified_carsi_pending",
       "policy_records": [
-        {"operation": "automated_search", "state": "unknown", "source": "https://library.xmu.edu.cn/zy/dzzy.htm"},
-        {"operation": "metadata_collect", "state": "unknown", "source": "https://library.xmu.edu.cn/zy/dzzy.htm"},
-        {"operation": "fulltext_download", "state": "unknown", "source": "https://library.xmu.edu.cn/zy/dzzy.htm"},
-        {"operation": "local_parse_index", "state": "unknown", "source": "https://library.xmu.edu.cn/zy/dzzy.htm"},
-        {"operation": "external_model_use", "state": "unknown", "source": "https://library.xmu.edu.cn/zy/dzzy.htm"}
+        {
+          "operation": "automated_search",
+          "state": "unknown",
+          "source": "https://library.xmu.edu.cn/zy/dzzy.htm"
+        },
+        {
+          "operation": "metadata_collect",
+          "state": "unknown",
+          "source": "https://library.xmu.edu.cn/zy/dzzy.htm"
+        },
+        {
+          "operation": "fulltext_download",
+          "state": "unknown",
+          "source": "https://library.xmu.edu.cn/zy/dzzy.htm"
+        },
+        {
+          "operation": "local_parse_index",
+          "state": "unknown",
+          "source": "https://library.xmu.edu.cn/zy/dzzy.htm"
+        },
+        {
+          "operation": "external_model_use",
+          "state": "unknown",
+          "source": "https://library.xmu.edu.cn/zy/dzzy.htm"
+        }
       ]
     }
   ]

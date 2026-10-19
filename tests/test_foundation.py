@@ -43,6 +43,15 @@ def test_human_challenge_return_upgrades_only_known_provider_search_paths():
         assert provider_https_upgrade(url, profile, method) is None
 
 
+def test_verified_authentication_get_endpoint_upgrades_without_touching_post_or_callbacks():
+    profile = Institution(institution_id="fixture", display_names=["Fixture"], allowed_hosts=["ids.fixture.example"],
+        https_navigation_paths={"ids.fixture.example": ["/authserver/login"]})
+    url = "http://ids.fixture.example/authserver/login?service=PRIVATE_OPAQUE_SERVICE"
+    assert provider_https_upgrade(url, profile, "GET") == url.replace("http:", "https:", 1)
+    assert provider_https_upgrade(url, profile, "POST") is None
+    assert provider_https_upgrade("http://ids.fixture.example/authserver/callback?ticket=PRIVATE_TICKET", profile, "GET") is None
+
+
 def test_gate_unknown_denied_expired_and_provider_scope(tmp_path):
     settings = Settings(data_dir=tmp_path, institutions=[Institution(institution_id="school", display_names=["学校"])])
     gate = PolicyGate(settings)

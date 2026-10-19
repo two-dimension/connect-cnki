@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import html
 import re
 from contextlib import asynccontextmanager
@@ -24,6 +25,10 @@ class BrowserAccess:
         self.https_upgrades: dict[str, int] = {}
         self.query_pages: dict[str, object] = {}
         self.detail_locators: dict[tuple[str, str], str] = {}
+        self.redirect_guards: dict = {}
+        self.guard_locks: dict = {}
+        self.guard_errors: dict[str, set[str]] = {}
+        self.blocked_request_shapes: dict[str, list[dict]] = {}
 
     async def start(self, institution_id: str, mode: str) -> dict:
         profile = self.settings.institution(institution_id)
@@ -79,7 +84,7 @@ class BrowserAccess:
 
     async def route_request(self, session_id: str, profile: Institution, route):
         try:
-            upgraded = provider_https_upgrade(route.request.url, profile, route.request.method)
+            upgraded = provider_https_upgrade(route.request.url, profile, route.request.method) if route.request.is_navigation_request() else None
             if upgraded:
                 # A local navigation document forces a fresh intercepted HTTPS request.
                 # Playwright's native 3xx continuation does not re-run route handlers.
@@ -104,9 +109,111 @@ class BrowserAccess:
                 hosts[category].add(hostname)
             if route.request.is_navigation_request():
                 self.blocked.add(session_id)
-            await route.abort()
+            try:
+                await route.abort()
+            except Exception:
+                pass
             return
-        await route.fallback()
+        except Exception:
+            self.guard_errors.setdefault(session_id, set()).add("REQUEST_GUARD_UNAVAILABLE")
+            self.blocked.add(session_id)
+            try:
+                await route.abort()
+            except Exception:
+                pass
+            return
+        try:
+            if session_id in self.contexts:
+                await self.ensure_redirect_guard(session_id, profile.institution_id, route.request.frame.page)
+            await route.fallback()
+        except Exception:
+            self.guard_errors.setdefault(session_id, set()).add("REQUEST_GUARD_UNAVAILABLE")
+            self.blocked.add(session_id)
+            try:
+                await route.abort()
+            except Exception:
+                pass
+
+    async def ensure_redirect_guard(self, session_id: str, institution_id: str, page):
+        """CDP checks every hop; Playwright routing only intercepts the first redirect hop.
+
+        The first routed request stays paused until this guard is enabled, including
+        newly opened pages. Authentication bodies and headers are never accessed.
+        """
+        async with self.guard_locks.setdefault(page, asyncio.Lock()):
+            if page in self.redirect_guards:
+                return
+            channel = await page.context.new_cdp_session(page)
+
+            async def paused(event):
+                request_id = event["requestId"]
+                request = event["request"]
+                url = request["url"]
+                navigation = event.get("resourceType") == "Document"
+                try:
+                    profile = self.settings.institution(institution_id)
+                    if urlsplit(url).scheme in {"about", "data", "blob"}:
+                        await channel.send("Fetch.continueRequest", {"requestId": request_id})
+                        return
+                    upgraded = provider_https_upgrade(url, profile, request["method"]) if navigation else None
+                    if upgraded:
+                        if not event.get("redirectedRequestId"):
+                            # Fresh requests are held by the Playwright route, which
+                            # creates the local HTTPS return. Only native redirect hops
+                            # need this CDP fulfillment; avoid handling a request twice.
+                            await channel.send("Fetch.continueRequest", {"requestId": request_id})
+                            return
+                        destination = html.escape(upgraded, quote=True)
+                        body = (f'<html><head><meta http-equiv="refresh" content="0;url={destination}"></head>'
+                                '<body>正在返回知网…</body></html>')
+                        await channel.send("Fetch.fulfillRequest", {"requestId": request_id, "responseCode": 200,
+                            "responseHeaders": [{"name": "Content-Type", "value": "text/html; charset=utf-8"},
+                                                {"name": "Cache-Control", "value": "no-store"},
+                                                {"name": "Referrer-Policy", "value": "no-referrer"}],
+                            "body": base64.b64encode(body.encode()).decode()})
+                        self.https_upgrades[session_id] = self.https_upgrades.get(session_id, 0) + 1
+                        return
+                    hosts = profile.allowed_hosts
+                    if not navigation and event.get("resourceType") in {"Script", "Stylesheet", "Image", "Font", "Media"}:
+                        hosts = [*hosts, *profile.resource_hosts]
+                    validate_url(url, hosts)
+                    await channel.send("Fetch.continueRequest", {"requestId": request_id})
+                except (AppError, ValueError):
+                    parts = urlsplit(url)
+                    hostname = parts.hostname
+                    shape = {"scheme": parts.scheme, "host": hostname, "port": parts.port,
+                             "method": request["method"], "navigation": navigation,
+                             "known_endpoint": parts.path if parts.path in {"/authserver/login", "/idp/authn/RemoteUser"} else "other"}
+                    shapes = self.blocked_request_shapes.setdefault(session_id, [])
+                    if shape not in shapes and len(shapes) < 24:
+                        shapes.append(shape)
+                    category = "navigation" if navigation else "resources"
+                    blocked = self.blocked_hosts.setdefault(session_id, {"navigation": set(), "resources": set()})
+                    if hostname:
+                        blocked[category].add(hostname)
+                    if navigation:
+                        self.blocked.add(session_id)
+                    try:
+                        await channel.send("Fetch.failRequest", {"requestId": request_id, "errorReason": "BlockedByClient"})
+                    except Exception:
+                        pass
+                except Exception:
+                    self.guard_errors.setdefault(session_id, set()).add("REDIRECT_GUARD_UNAVAILABLE")
+                    self.blocked.add(session_id)
+                    try:
+                        await channel.send("Fetch.failRequest", {"requestId": request_id, "errorReason": "BlockedByClient"})
+                    except Exception:
+                        pass
+
+            channel.on("Fetch.requestPaused", paused)
+            await channel.send("Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]})
+            self.redirect_guards[page] = channel
+
+            def closed():
+                self.redirect_guards.pop(page, None)
+                self.guard_locks.pop(page, None)
+
+            page.on("close", closed)
 
     async def reconfigure(self, session_id: str, settings: Settings) -> dict:
         """Load a maintainer's validated local profile without replacing browser cookies."""
@@ -212,7 +319,10 @@ class BrowserAccess:
                                 tag: element.tagName.toLowerCase(), id: element.id,
                                 classes: typeof element.className === 'string' ? element.className : '',
                                 parent_id: element.parentElement?.id || '',
-                                parent_classes: typeof element.parentElement?.className === 'string' ? element.parentElement.className : ''
+                                parent_classes: typeof element.parentElement?.className === 'string' ? element.parentElement.className : '',
+                                ancestors: [element.parentElement,element.parentElement?.parentElement,
+                                    element.parentElement?.parentElement?.parentElement].filter(node => node && node.tagName !== 'BODY')
+                                    .map(node => ({tag:node.tagName.toLowerCase(),id:node.id,classes:typeof node.className === 'string' ? node.className : ''}))
                             })""")
                             item["known_search_choices"].append({"label": label, "visible": await choice.is_visible(), **choice_shape})
                     item["result_layout"] = []
@@ -262,10 +372,14 @@ class BrowserAccess:
                                                                "selector_candidates": suggestions})
                 pages.append(item)
         blocked = self.blocked_hosts.get(session_id, {"navigation": set(), "resources": set()})
-        return {"session_id": session_id, "identity_verified": session["state"] == "ready",
+        has_interaction = any(page["kind"] in {"authentication", "identity_provider", "human_verification"} for page in pages)
+        return {"session_id": session_id, "identity_verified": session["state"] == "ready"
+                and session_id not in self.blocked and not has_interaction,
                 "open_page_count": len(pages),
                 "configured_institution_selector": bool(profile.selectors.institution_label),
                 "https_return_upgrades": self.https_upgrades.get(session_id, 0),
+                "guard_errors": sorted(self.guard_errors.get(session_id, set())),
+                "blocked_requests": self.blocked_request_shapes.get(session_id, []),
                 "pages": pages, "blocked_hosts": {key: sorted(value) for key, value in blocked.items()},
                 "note": "候选节点仅供维护者核验；学校名出现在正文不能证明机构认证。"}
 
@@ -297,6 +411,9 @@ class BrowserAccess:
             for page in context.pages:
                 # Never inspect IdP pages, callbacks, school login DOM, inputs or assertions.
                 if urlsplit(page.url).hostname not in profile.provider_hosts:
+                    if urlsplit(page.url).hostname in profile.allowed_hosts:
+                        pending_interaction = True
+                        code = "AUTHENTICATION_REQUIRED"
                     continue
                 if any(x in urlsplit(page.url).path.casefold() for x in ("login", "saml", "callback", "auth")):
                     pending_interaction = True
@@ -367,6 +484,8 @@ class BrowserAccess:
         self.blocked.discard(session_id)
         self.blocked_hosts.pop(session_id, None)
         self.https_upgrades.pop(session_id, None)
+        self.guard_errors.pop(session_id, None)
+        self.blocked_request_shapes.pop(session_id, None)
         for key in [key for key in self.detail_locators if key[0] == session_id]:
             self.detail_locators.pop(key, None)
         self.store.put("session", {**session, "state": "closed", "error_code": None})
@@ -380,3 +499,5 @@ class BrowserAccess:
             await self.browser.close()
         if self.playwright:
             await self.playwright.stop()
+        self.redirect_guards.clear()
+        self.guard_locks.clear()
