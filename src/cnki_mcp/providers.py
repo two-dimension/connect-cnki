@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 
 from .access import BrowserAccess
 from .config import Institution, Settings, public_url, re_safe, validate_url
-from .core import AppError, require
+from .core import AppError, normalize, require
 from .models import PaperInput, SearchFilters, SearchQuery
 from .policy import PolicyGate
 
@@ -137,7 +137,7 @@ class CNKIProvider:
             require(query.field in selectors.search_fields, "UNSUPPORTED_QUERY", "当前档案尚未核验该检索字段。")
         controls = {k: v for k, v in filters.model_dump().items() if v not in (None, [])}
         require(all(k in selectors.filter_controls for k in controls),
-                "UNSUPPORTED_FILTER", "当前入口尚未配置该筛选条件。")
+                "UNSUPPORTED_FILTER", "当前来源条件尚未核验；可显式使用 filter_mode=local_candidates 在预算内候选中筛选。")
         require(sort == selectors.default_sort or sort in selectors.sort_controls,
                 "UNSUPPORTED_SORT", "当前入口尚未核验该排序控件或默认排序。")
         await self.throttle(profile.institution_id, "automated_search", "metadata_collect")
@@ -333,8 +333,18 @@ class CNKIProvider:
             await self.goto(page, detail_url, profile, session_id)
             await self.guard_page(page, profile, session_id)
             selectors = profile.selectors
-            if selectors.not_subscribed and await page.locator(selectors.not_subscribed).count():
-                raise AppError("RESOURCE_NOT_SUBSCRIBED", "此资源不在当前订购范围内。")
+            try:
+                title = page.locator(selectors.detail_title)
+                await title.wait_for(state="visible")
+            except Error:
+                await self.guard_page(page, profile, session_id)
+                raise AppError("SOURCE_LAYOUT_CHANGED", "下载详情页缺少唯一可见题名。") from None
+            require(normalize(await title.inner_text()) == normalize(paper["title"]),
+                    "SOURCE_IDENTITY_CONFLICT", "下载入口题名与保存版本不一致，停止关联文件。")
+            if selectors.not_subscribed:
+                for denied in await page.locator(selectors.not_subscribed).all():
+                    if await denied.is_visible():
+                        raise AppError("RESOURCE_NOT_SUBSCRIBED", "此资源不在当前订购范围内。")
             available = page.locator(selectors.resource_available) if selectors.resource_available else None
             require(available and await available.count() and await available.first.is_visible(),
                     "ACCESS_UNDETERMINED", "没有可靠的单篇全文访问证据。", "请使用正常网页人工核验。")
@@ -342,10 +352,18 @@ class CNKIProvider:
             require(await control.count() == 1 and await control.is_visible() and await control.is_enabled(),
                     "SOURCE_LAYOUT_CHANGED", "单篇 PDF 下载控件缺失或不唯一。")
             try:
+                # Keep an ordinary download anchor in this guarded detail page.
+                # This retains the browser's native source context and avoids a
+                # popup bootstrap changing the download service's referrer.
+                if await control.get_attribute("target") == "_blank":
+                    await control.evaluate("element => element.removeAttribute('target')")
                 await control.click()
                 download = await asyncio.wait_for(pending_download, self.settings.network_timeout_ms / 1000)
             except (TimeoutError, Error):
                 self.access.assert_not_blocked(session_id)
+                if any(not opened.is_closed() and urlsplit(opened.url).hostname == "bar.cnki.net"
+                       and urlsplit(opened.url).path == "/bar/ErrorMsg.html" for opened in owned_pages):
+                    raise AppError("PROVIDER_UNAVAILABLE", "知网下载服务返回错误页，未保存全文。", retryable=True) from None
                 checked = await self.access.verify_in_context(session_id, context)
                 require(checked["state"] == "ready", checked.get("error_code") or "AUTHENTICATION_REQUIRED",
                         "下载需要重新认证或人工验证。", "请在保留的专用窗口处理后重新核验。")

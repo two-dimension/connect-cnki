@@ -4,6 +4,7 @@ import asyncio
 import functools
 import hashlib
 import json
+import shutil
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -240,8 +241,9 @@ class Application:
     async def search_papers(self, project_id: ID, session_id: ID, query: SearchQuery,
                             filters: SearchFilters | None = None,
                             sort: Literal["relevance", "latest", "cited"] = "relevance",
-                            cursor: str | None = None, limit: Annotated[int, Field(ge=1, le=20)] = 20) -> dict:
-        """获准后在知网受控入口检索并入库；游标绑定项目、会话、条件与配置，不代表穷尽检索。"""
+                            cursor: str | None = None, limit: Annotated[int, Field(ge=1, le=20)] = 20,
+                            filter_mode: Literal["source", "local_candidates"] = "source") -> dict:
+        """受控检索入库。source 要求已核验来源筛选；local_candidates 显式在预算内候选筛选年份/类型，保留排除记录，可继续游标。不代表穷尽检索。"""
         project = self.store.get(project_id, "project")
         require(project["institution_id"], "INSTITUTION_UNVERIFIED", "项目尚未绑定学校。")
         search_policy = self.gate.check(project["institution_id"], "automated_search")
@@ -249,10 +251,12 @@ class Application:
         filters = filters or SearchFilters()
         for policy in (search_policy, metadata_policy):
             if "*" not in policy.resource_types:
+                require(filter_mode == "source", "POLICY_SCOPE_REQUIRED", "类型受限许可必须在来源端约束，不能用候选本地筛选替代。")
                 require(filters.paper_types and set(filters.paper_types) <= set(policy.resource_types),
                         "POLICY_SCOPE_REQUIRED", "检索必须显式限制在许可的文献类型内。")
         snapshot = {"project_id": project_id, "session_id": session_id, "query": query.model_dump(),
-                    "filters": filters.model_dump(), "sort": sort, "config_digest": self.config_digest}
+                    "filters": filters.model_dump(), "filter_mode": filter_mode,
+                    "sort": sort, "config_digest": self.config_digest}
         cursor_record = None
         if cursor:
             cursor_record = self.store.get(cursor, "cursor")
@@ -277,7 +281,8 @@ class Application:
             async with self.online(session_id, project, run) as (context, profile):
                 if not run["cached"]:
                     records, has_next, truncated = await self.provider.page(context, profile, session_id, run["id"], query,
-                                                                filters, sort, run["pages_read"] + 1,
+                                                                filters if filter_mode == "source" else SearchFilters(),
+                                                                sort, run["pages_read"] + 1,
                                                                 record_limit=min(remaining, project_remaining))
                     run.update(cached=[r.model_dump() for r in records], has_next=has_next, source_page_truncated=truncated,
                                pages_read=run["pages_read"] + 1)
@@ -288,13 +293,33 @@ class Application:
                 take = min(limit, remaining, project_remaining)
                 selected, rest = run["cached"][:take], run["cached"][take:]
                 output = []
+                excluded = []
                 for value in selected:
+                    reasons = []
+                    if filters.year_from or filters.year_to:
+                        if value.get("year") is None:
+                            reasons.append("year_unknown")
+                        elif ((filters.year_from and value["year"] < filters.year_from)
+                              or (filters.year_to and value["year"] > filters.year_to)):
+                            reasons.append("year_outside_range")
+                    if filters.paper_types and value["paper_type"] not in filters.paper_types:
+                        reasons.append("paper_type_outside_scope")
+                    require(filter_mode != "source" or not reasons, "SOURCE_LAYOUT_CHANGED", "来源未保持请求的年份或类型条件。")
                     self.gate.check(project["institution_id"], "metadata_collect", value["paper_type"])
                     rights = {"origin": "institution", "institution_id": project["institution_id"],
                               "resource_type": value["paper_type"]}
                     item = self.library.ingest(project_id, PaperInput.model_validate(value), rights, "cnki_search")
-                    output.append(self.library.present(self.store.get(item["version_id"], "version")))
+                    if reasons:
+                        decision = {"query_id": run["id"], "version_id": item["version_id"],
+                                    "reasons": reasons, "filters": filters.model_dump()}
+                        self.store.put("query_filter", decision)
+                        excluded.append({"version_id": item["version_id"], "reasons": reasons})
+                    else:
+                        output.append(self.library.present(self.store.get(item["version_id"], "version")))
                 run.update(cached=rest, collected=run["collected"] + len(selected))
+                run["matched_count"] = run.get("matched_count", 0) + len(output)
+                run["filtered_out_count"] = run.get("filtered_out_count", 0) + len(excluded)
+                run["filter_exclusions"] = [*run.get("filter_exclusions", []), *excluded]
                 budget_hit = run["collected"] >= candidate_cap or len(self.store.papers(project_id)) >= candidate_cap
                 end = not rest and not run["has_next"]
                 truncated_end = not rest and run.get("source_page_truncated", False)
@@ -313,6 +338,10 @@ class Application:
                 return {"query_id": run["id"], "papers": output, "next_cursor": next_cursor,
                         "pages_read": run["pages_read"], "collected": run["collected"],
                         "effective_candidate_budget": candidate_cap,
+                        "filter_mode": filter_mode, "matched_count": run["matched_count"],
+                        "filtered_out_count": run["filtered_out_count"], "filtered_out": excluded,
+                        "_warnings": ["年份/类型条件仅在预算内取得的候选中筛选；limit 计候选批次，排除记录保留，可继续游标。"]
+                                     if filter_mode == "local_candidates" else [],
                         "source_page_truncated": run.get("source_page_truncated", False),
                         "applied_sort": sort, "sort_verification": run["sort_verification"],
                         "stop_reason": run["stop_reason"], "exhaustive": False, "fetched_at": now()}
@@ -401,6 +430,21 @@ class Application:
                 asset = self.documents.register(paper["id"], temporary, rights, "cnki_download")
                 self.store.db.commit()
                 return asset
+        except AppError as error:
+            if error.code == "FILE_VALIDATION_FAILED" and temporary.is_file():
+                rejected = self.store.root / "rejected_downloads"
+                rejected.mkdir(exist_ok=True)
+                with temporary.open("rb") as stream:
+                    sha = hashlib.file_digest(stream, "sha256").hexdigest()
+                destination = rejected / f"{sha}.unvalidated"
+                if not destination.exists():
+                    shutil.copyfile(temporary, destination)
+                manifest = {"version_id": paper["id"], "job_id": job["id"], "sha256": sha,
+                            "size": temporary.stat().st_size, "error_code": error.code,
+                            "diagnostic_code": error.diagnostic_code, "at": now(),
+                            "state": "unvalidated_not_an_asset"}
+                (rejected / f"{job['id']}.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+            raise
         finally:
             temporary.unlink(missing_ok=True)
 

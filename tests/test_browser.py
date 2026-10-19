@@ -85,6 +85,8 @@ async def test_real_browser_synthetic_search_pagination_and_identity(app):
         assert "PRIVATE_TOKEN" not in str(layout)
         assert "PRIVATE_CHECKBOX_TOKEN" not in str(layout)
         cursor = first["next_cursor"]
+        mismatch = await app.search_papers(project, sid, query, cursor=cursor, limit=1, filter_mode="local_candidates")
+        assert mismatch["error"]["code"] == "CURSOR_MISMATCH"
         assert "PRIVATE_TOKEN" not in str(first)
         second = await app.search_papers(project, sid, query, cursor=cursor, limit=1)
         assert second["data"]["pages_read"] == 1  # Remaining cached row, no second network page.
@@ -192,9 +194,10 @@ async def test_pdf_download_in_new_window_is_registered_and_windows_are_closed(a
                 await route.fulfill(status=200, content_type="text/html",
                                     body='<script>setTimeout(()=>location.href="/fixture.pdf",70)</script>')
             else:
+                popup_handler = "onclick=\"window.open(this.href,'_blank');return false\"" if popup_path == "/download-window" else ""
                 await route.fulfill(status=200, content_type="text/html", body=f'''
                     <div class="institution">Fixture University</div><div class="wx-tit"><h1>Fixture download</h1></div>
-                    <a id="pdfDown" target="_blank" href="{popup_path}">PDF下载</a>
+                    <a id="pdfDown" target="_blank" href="{popup_path}" {popup_handler}>PDF下载</a>
                     <a id="pdfDown" hidden>PDF下载</a>''')
 
         await context.route("**/*", serve)
@@ -220,6 +223,14 @@ async def test_pdf_download_in_new_window_is_registered_and_windows_are_closed(a
         assert asset["validation"] == "pdf_structural" and asset["version_id"] == version
         assert len(context.pages) == 1 and context.pages[0] == homepage
         assert sum(url.endswith(popup_path) for url in received_urls) == 1
+        other = record.model_copy(update={"title": "Different fixture version", "source_id": "CJFD:DIFFERENTFIXTURE"})
+        other_id = app.library.ingest(project, other, rights, "cnki_search")["version_id"]
+        app.store.db.commit()
+        mismatched = await app.acquire_fulltext(project, sid, other_id, "mismatched-download")
+        await app.jobs.tasks[mismatched["job_id"]]
+        rejected = (await app.get_job(mismatched["job_id"]))["data"]
+        assert rejected["error"]["code"] == "SOURCE_IDENTITY_CONFLICT"
+        assert len(app.store.all("asset")) == 1
         await homepage.evaluate("window.open('/popup-redirect','_blank')")
 
         async def wait_for_block():

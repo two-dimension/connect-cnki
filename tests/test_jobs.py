@@ -1,7 +1,46 @@
 import asyncio
+import hashlib
+import json
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 
+from cnki_mcp.config import Institution, PolicyRecord
 from cnki_mcp.core import AppError, Store
 from cnki_mcp.jobs import Jobs
+
+
+async def test_failed_download_preserves_unvalidated_file_without_registering_an_asset(app, paper, monkeypatch):
+    profile = Institution(institution_id="fixture", display_names=["Fixture"], policy_records=[PolicyRecord(operation="fulltext_download",
+        state="allowed", source="Synthetic fixture", verified_by="tests", resource_types=["*"],
+        verified_at=datetime.now(UTC) - timedelta(days=1), expires_at=datetime.now(UTC) + timedelta(days=1))])
+    app.settings.institutions.append(profile)
+    project = (await app.create_project("Rejected download", "fixture"))["data"]["project_id"]
+    rights = {"origin": "institution", "institution_id": "fixture", "resource_type": "journal"}
+    version = app.library.ingest(project, paper, rights, "cnki_search")["version_id"]
+    sid = app.store.put("session", {"institution_id": "fixture", "mode": "institution_network", "state": "ready"})["id"]
+    app.store.db.commit()
+    invalid_pdf = b"%PDF-1.4\nSynthetic invalid PDF\n%%EOF\n"
+
+    @asynccontextmanager
+    async def online(*args):
+        yield object(), profile
+
+    async def download(context, institution, session_id, record, target):
+        target.write_bytes(invalid_pdf)
+
+    monkeypatch.setattr(app, "online", online)
+    monkeypatch.setattr(app.provider, "download", download)
+    submitted = await app.acquire_fulltext(project, sid, version, "rejected-fixture")
+    await app.jobs.tasks[submitted["job_id"]]
+    result = (await app.get_job(submitted["job_id"]))["data"]
+    assert result["state"] == "failed" and result["error"]["code"] == "FILE_VALIDATION_FAILED"
+    assert not app.store.all("asset")
+    rejected = app.store.root / "rejected_downloads"
+    manifest = json.loads((rejected / f"{submitted['job_id']}.json").read_text(encoding="utf-8"))
+    sha = hashlib.sha256(invalid_pdf).hexdigest()
+    assert manifest["sha256"] == sha and manifest["diagnostic_code"] == "PdfReadError"
+    assert manifest["state"] == "unvalidated_not_an_asset"
+    assert (rejected / f"{sha}.unvalidated").read_bytes() == invalid_pdf
 
 
 async def test_idempotency_cancel_and_restart(tmp_path):

@@ -38,13 +38,15 @@
         "idp.xmu.edu.cn",
         "login.cnki.net",
         "ids.xmu.edu.cn",
-        "bar.cnki.net"
+        "bar.cnki.net",
+        "docdown.cnki.net"
       ],
       "provider_hosts": [
         "kns.cnki.net",
         "www.cnki.net",
         "fsso.cnki.net",
-        "bar.cnki.net"
+        "bar.cnki.net",
+        "docdown.cnki.net"
       ],
       "resource_hosts": [
         "piccache.cnki.net",

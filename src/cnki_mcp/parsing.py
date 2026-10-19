@@ -39,8 +39,13 @@ class Documents:
                     _ = page.mediabox
             except AppError:
                 raise
-            except Exception:
-                raise AppError("FILE_VALIDATION_FAILED", "PDF 结构损坏或文件不完整。") from None
+            except Exception as error:
+                category = type(error).__name__
+                if category not in {"PdfReadError", "PdfStreamError", "DependencyError", "FileNotDecryptedError",
+                                    "WrongPasswordError", "ValueError", "TypeError", "KeyError", "AttributeError"}:
+                    category = "OtherPdfError"
+                raise AppError("FILE_VALIDATION_FAILED", "PDF 结构损坏或文件不完整。",
+                               diagnostic_code=category) from None
         else:
             # CAJ has no bundled structural validator: preserve it, never report validated fulltext.
             require(source == "user_import", "FILE_VALIDATION_FAILED", "自动下载的 CAJ 尚无完整性检查器，请人工导入。")

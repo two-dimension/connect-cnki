@@ -98,5 +98,44 @@
       "state": "passed",
       "verification": "active_control_match"
     }
-  ]
+  ],
+  "local_candidate_filter_validation": {
+    "observed_at": "2026-10-19T12:04:52.704929+00:00",
+    "state": "passed",
+    "query": {
+      "text": "大语言模型",
+      "field": "title"
+    },
+    "filters": {
+      "year_from": 2025,
+      "year_to": 2025,
+      "paper_types": [
+        "journal"
+      ]
+    },
+    "filter_mode": "local_candidates",
+    "candidates_evaluated": 3,
+    "matched": 1,
+    "excluded": 2,
+    "matched_source_id": "CJFQ:HLKX202509026",
+    "exclusion_reasons_saved": true,
+    "source_side_filters_verified": false
+  },
+  "remembered_sort_validation": {
+    "observed_at": "2026-10-19T11:49:43.468807+00:00",
+    "state": "passed",
+    "previous": "cited",
+    "requested": "latest",
+    "verification": "active_control_match"
+  },
+  "fulltext_validation": {
+    "observed_at": "2026-10-19T12:01:54.121566+00:00",
+    "source_id": "CJFQ:XYKZ202608015",
+    "file_received": true,
+    "state": "file_validation_failed",
+    "error_code": "FILE_VALIDATION_FAILED",
+    "asset_created": false,
+    "parsed_fulltext": false,
+    "note": "Strict PDF structural validation failed; this is not successful readable-fulltext evidence."
+  }
 }

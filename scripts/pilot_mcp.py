@@ -112,11 +112,11 @@ async def run(arguments):
                             try:
                                 override = json.loads(payload)
                                 if command != "search" or not isinstance(override, dict) or not set(override) <= {
-                                    "query", "filters", "sort", "limit",
+                                    "query", "filters", "filter_mode", "sort", "limit",
                                 }:
                                     raise ValueError
                             except (ValueError, TypeError):
-                                emit({"code": "INVALID_PILOT_QUERY", "message": "search 后只接受 query、filters、sort、limit 的 JSON 对象。"})
+                                emit({"code": "INVALID_PILOT_QUERY", "message": "search 后只接受 query、filters、filter_mode、sort、limit 的 JSON 对象。"})
                                 continue
                             search_values = {**search_values, **override}
                             cursor = None
@@ -124,6 +124,7 @@ async def run(arguments):
                             emit({"code": "NO_NEXT_CURSOR", "message": "没有可继续的游标。"})
                             continue
                         values = {"project_id": project_id, "session_id": session_id, **search_values}
+                        last_version_id = last_asset_id = last_job_id = None
                         if command == "next":
                             values["cursor"] = cursor
                         result = await call("search_papers", values)

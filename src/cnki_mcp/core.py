@@ -44,8 +44,10 @@ def digest(value: Any) -> str:
 
 
 class AppError(Exception):
-    def __init__(self, code: str, message: str, action: str = "", retryable: bool = False):
+    def __init__(self, code: str, message: str, action: str = "", retryable: bool = False,
+                 diagnostic_code: str | None = None):
         self.code, self.message, self.action, self.retryable = code, message, action, retryable
+        self.diagnostic_code = diagnostic_code
         super().__init__(message)
 
 

@@ -86,6 +86,57 @@ async def test_metadata_rate_requirement_is_applied_to_search(app, monkeypatch):
     assert sleeps == [4]
 
 
+async def test_explicit_local_filters_preserve_all_candidates_and_exclusion_reasons(app, monkeypatch):
+    institution = profile()
+    app.settings.institutions.append(institution)
+    project = (await app.create_project("Local filter fixture", "fixture", budget=10))["data"]["project_id"]
+    records = [PaperInput(title=f"Filter fixture {index}", authors=["Fixture Author"], year=year, paper_type=kind)
+               for index, (year, kind) in enumerate([(2024, "journal"), (2020, "journal"), (2024, "thesis"), (None, "journal")])]
+
+    @asynccontextmanager
+    async def online(*args):
+        yield object(), institution
+
+    async def page(*args, record_limit=None):
+        assert args[5] == SearchFilters()  # The source is not claimed to apply these conditions.
+        return records, False, False
+
+    monkeypatch.setattr(app, "online", online)
+    monkeypatch.setattr(app.provider, "page", page)
+    filters = SearchFilters(year_from=2023, year_to=2025, paper_types=["journal"])
+    result = await app.search_papers(project, "session_fixture", SearchQuery(text="fixture"), filters=filters,
+                                     filter_mode="local_candidates", limit=4)
+    assert result["status"] == "succeeded", result
+    assert len(result["data"]["papers"]) == 1 and result["data"]["papers"][0]["year"] == 2024
+    assert result["data"]["collected"] == 4 and result["data"]["matched_count"] == 1
+    assert result["data"]["filtered_out_count"] == 3 and result["warnings"]
+    assert len(app.store.papers(project)) == 4 and len(app.store.all("query_filter")) == 3
+    run = app.store.get(result["data"]["query_id"], "query")
+    assert {reason for decision in run["filter_exclusions"] for reason in decision["reasons"]} == {
+        "year_unknown", "year_outside_range", "paper_type_outside_scope",
+    }
+
+
+async def test_local_filter_mode_cannot_replace_a_type_limited_collection_permission(app, monkeypatch):
+    institution = profile()
+    for policy in institution.policy_records:
+        policy.resource_types = ["journal"]
+    app.settings.institutions.append(institution)
+    project = (await app.create_project("Restricted collection fixture", "fixture"))["data"]["project_id"]
+    visited = False
+
+    @asynccontextmanager
+    async def online(*args):
+        nonlocal visited
+        visited = True
+        yield object(), institution
+
+    monkeypatch.setattr(app, "online", online)
+    result = await app.search_papers(project, "session_fixture", SearchQuery(text="fixture"),
+        filters=SearchFilters(paper_types=["journal"]), filter_mode="local_candidates")
+    assert result["error"]["code"] == "POLICY_SCOPE_REQUIRED" and not visited
+
+
 async def test_unknown_default_sort_is_rejected_before_source_navigation(app):
     from cnki_mcp.core import AppError
 
