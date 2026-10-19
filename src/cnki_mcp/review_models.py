@@ -78,3 +78,108 @@ class PaperCardInput(StrictModel):
     fields: list[CardField] = Field(default_factory=list, max_length=50)
     sections: list[SectionRange] = Field(default_factory=list, max_length=50)
     pending_questions: list[str] = Field(default_factory=list, max_length=100)
+
+
+class ClaimSourceInput(StrictModel):
+    source_id: str | None = None
+    relation: Literal["supports", "contradicts", "qualifies", "background"]
+    reference: EvidenceReference
+    conditions: str = Field(default="", max_length=4000)
+    independence_group: str | None = Field(default=None, max_length=200)
+
+
+class ReviewClaimInput(StrictModel):
+    claim_id: str | None = None
+    text: str = Field(min_length=1, max_length=10000)
+    claim_type: Literal["finding", "synthesis", "gap"] = "finding"
+    scope: str = Field(default="", max_length=4000)
+    sources: list[ClaimSourceInput] = Field(default_factory=list, max_length=100)
+    pending_questions: list[str] = Field(default_factory=list, max_length=100)
+
+
+class ComparisonRow(StrictModel):
+    version_id: str
+    dimensions: dict[str, str | None] = Field(default_factory=dict, max_length=30)
+    comparable: bool | None = None
+    comparison_limits: str = Field(default="", max_length=4000)
+    references: list[EvidenceReference] = Field(default_factory=list, max_length=30)
+
+
+class SynthesisThemeInput(StrictModel):
+    theme_id: str | None = None
+    title: str = Field(min_length=1, max_length=500)
+    subquestion: str = Field(default="", max_length=4000)
+    classification_reason: str = Field(default="", max_length=4000)
+    dimensions: list[str] = Field(default_factory=list, max_length=30)
+    rows: list[ComparisonRow] = Field(default_factory=list, max_length=100)
+    consensus: str = Field(default="", max_length=6000)
+    disagreement: str = Field(default="", max_length=6000)
+    contrary_evidence: str = Field(default="", max_length=6000)
+    project_relation: str = Field(default="", max_length=4000)
+    pending_questions: list[str] = Field(default_factory=list, max_length=100)
+
+
+class SynthesisInput(StrictModel):
+    subquestion: str = Field(min_length=1, max_length=4000)
+    plan_id: str | None = None
+    card_ids: list[str] = Field(default_factory=list, max_length=100)
+    themes: list[SynthesisThemeInput] = Field(default_factory=list, max_length=50)
+    claims: list[ReviewClaimInput] = Field(default_factory=list, max_length=200)
+    search_scope: str = Field(default="current selected corpus", max_length=6000)
+
+
+class ParagraphInput(StrictModel):
+    paragraph_id: str | None = None
+    text: str = Field(min_length=1, max_length=20000)
+    claim_ids: list[str] = Field(default_factory=list, max_length=100)
+
+
+class ReviewSectionInput(StrictModel):
+    title: str = Field(min_length=1, max_length=500)
+    question: str = Field(min_length=1, max_length=4000)
+    thesis: str = Field(default="", max_length=6000)
+    plan_id: str | None = None
+    synthesis_ids: list[str] = Field(default_factory=list, max_length=100)
+    card_ids: list[str] = Field(default_factory=list, max_length=100)
+    paragraphs: list[ParagraphInput] = Field(default_factory=list, max_length=200)
+    classification_reason: str = Field(default="", max_length=4000)
+    comparison_dimensions: list[str] = Field(default_factory=list, max_length=30)
+    supporting_arguments: list[str] = Field(default_factory=list, max_length=100)
+    contrary_arguments: list[str] = Field(default_factory=list, max_length=100)
+    evidence_gaps: list[str] = Field(default_factory=list, max_length=100)
+    previous_context: str = Field(default="", max_length=6000)
+    next_context: str = Field(default="", max_length=6000)
+    terminology: dict[str, str] = Field(default_factory=dict, max_length=200)
+    established_conclusions: list[str] = Field(default_factory=list, max_length=100)
+    open_questions: list[str] = Field(default_factory=list, max_length=100)
+    editing_pass: Literal["draft", "facts", "structure", "language"] = "draft"
+    allow_user_edit_changes: bool = False
+
+
+class ClaimAssessment(StrictModel):
+    claim_id: str
+    status: Literal["fully_supported", "partially_supported", "contradicted", "insufficient_evidence", "not_assessed"]
+    reason: str = Field(min_length=1, max_length=6000)
+    references: list[EvidenceReference] = Field(default_factory=list, max_length=100)
+
+
+class SentenceAssessment(StrictModel):
+    sentence_id: str
+    disposition: Literal["factual", "non_factual", "unresolved"]
+    claim_ids: list[str] = Field(default_factory=list, max_length=100)
+    reason: str = Field(default="", max_length=4000)
+
+
+class ReverseOutlineItem(StrictModel):
+    paragraph_id: str
+    main_point: str = Field(min_length=1, max_length=4000)
+    function: str = Field(min_length=1, max_length=2000)
+    connection: str = Field(default="", max_length=4000)
+
+
+class ReviewCheckInput(StrictModel):
+    review_type: Literal["support", "structure", "language", "human"] = "support"
+    claim_assessments: list[ClaimAssessment] = Field(default_factory=list, max_length=200)
+    sentence_assessments: list[SentenceAssessment] = Field(default_factory=list, max_length=500)
+    reverse_outline: list[ReverseOutlineItem] = Field(default_factory=list, max_length=200)
+    issues: list[str] = Field(default_factory=list, max_length=200)

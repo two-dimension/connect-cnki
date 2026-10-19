@@ -42,7 +42,10 @@ class Jobs:
             result = await self.handlers[job["operation"]](job)
             current = self.store.get(job_id, "job")
             if current["state"] != "cancelled":
-                job.update(state=result.pop("_job_state", "succeeded"), progress=1, result=result, checkpoint="completed")
+                job = current
+                job.update(state=result.pop("_job_state", "succeeded"), progress=result.pop("_progress", 1),
+                           checkpoint=result.pop("_checkpoint", "completed"),
+                           recovery_reason=result.pop("_recovery_reason", None), result=result)
                 self.store.put("job", job)
         except asyncio.CancelledError:
             job.update(state="waiting_for_user" if self.stopping else "cancelled",

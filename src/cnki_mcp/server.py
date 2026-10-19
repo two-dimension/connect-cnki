@@ -8,6 +8,7 @@ from mcp.types import ToolAnnotations
 
 from .app import TOOL_NAMES, Application
 from .config import Settings
+from .writing import writing_prompt
 
 
 def create_server(settings: Settings | None = None) -> FastMCP:
@@ -61,5 +62,15 @@ def create_server(settings: Settings | None = None) -> FastMCP:
             "每个实质论断关联实际 version_id 和 evidence_ids，以 [version_id] 引用；"
             "用 save_review 保存草稿并检查，不把身份检查当成语义支持认证。最后导出项目和参考文献。"
         )
+
+    @server.prompt()
+    def review_section(discipline: str = "general", genre: str = "related_work") -> str:
+        """按 WRITE-01～12 规划和撰写可核查的一节；先确认项目选择。"""
+        return writing_prompt(discipline, genre)
+
+    @server.prompt()
+    def review_check(discipline: str = "general", genre: str = "related_work") -> str:
+        """事实、结构、语言分轮审查与反向提纲；模型意见和人工判断分别保存。"""
+        return writing_prompt(discipline, genre, "facts_structure_language")
 
     return server

@@ -33,8 +33,17 @@ from .parsing import Documents
 from .policy import PolicyGate, protected
 from .providers import CNKIProvider
 from .review_evidence import ReviewEvidence
-from .review_models import CorpusItemInput, PaperCardInput, ReviewPlanInput
+from .review_models import (
+    CorpusItemInput,
+    PaperCardInput,
+    ReviewCheckInput,
+    ReviewPlanInput,
+    ReviewSectionInput,
+    SynthesisInput,
+)
+from .review_preparation import ReviewPreparation
 from .review_workspace import ReviewWorkspace
+from .review_writing import ReviewWriting
 from .reviews import Reviews
 from .screening import Screening
 
@@ -108,7 +117,11 @@ class Application:
         self.reviews = Reviews(self.store, self.library, self.documents)
         self.review_workspace = ReviewWorkspace(self.store, self.library, self.gate)
         self.review_evidence = ReviewEvidence(self.review_workspace, settings)
+        self.review_writing = ReviewWriting(self.review_workspace)
+        self.review_preparation = ReviewPreparation(self.review_workspace, self.review_evidence, self.jobs, settings)
         self.jobs.handlers = {"parse_fulltext": self.documents.parse, "acquire_fulltext": self._download}
+        self.jobs.handlers.update({"prepare_review_v2": self.review_preparation.run,
+                                   "prepare_synthesis": self.review_preparation.run})
         self.query_locks: dict[str, asyncio.Lock] = {}
 
     async def shutdown(self):
@@ -604,15 +617,51 @@ class Application:
 
     @endpoint
     async def prepare_review(self, project_id: ID, question: Annotated[str, Field(max_length=4000)] = "",
-                             version_ids: list[str] | None = None) -> dict:
+                             version_ids: list[str] | None = None, snapshot_id: str | None = None,
+                             plan_id: str | None = None) -> dict:
         """准备文献矩阵、证据包与综述结构；由调用方 Agent 撰写，服务不另行调用模型。"""
+        if snapshot_id:
+            return self.review_preparation.submit(project_id, question, snapshot_id, version_ids, plan_id)
+        require(not plan_id, "CORPUS_SNAPSHOT_REQUIRED", "增强研究计划需显式选择语料快照。")
         return self.reviews.prepare(project_id, question, version_ids)
 
     @endpoint
     async def save_review(self, project_id: ID, body: Annotated[str, Field(min_length=1, max_length=200000)],
-                          claims: Annotated[list[ClaimInput], Field(max_length=1000)]) -> dict:
+                          claims: Annotated[list[ClaimInput] | None, Field(max_length=1000)] = None,
+                          snapshot_id: str | None = None, section: ReviewSectionInput | None = None,
+                          entity_id: str | None = None, parent_revision_id: str | None = None,
+                          actor_role: Literal["agent", "user"] = "agent",
+                          reason: Annotated[str, Field(min_length=1, max_length=2000)] = "initial") -> dict:
         """保存综述草稿并检查引用身份、证据绑定及原文引语；语义支持仍需人工或模型复核。"""
-        return self.reviews.save(project_id, body, claims)
+        if section or snapshot_id:
+            require(section and snapshot_id and not claims, "INVALID_ARGUMENT", "增强章节需 section 和 snapshot_id；论断来自 synthesis_ids。")
+            return self.review_writing.save_section(project_id, snapshot_id, body, section, entity_id=entity_id,
+                parent_revision_id=parent_revision_id, actor_role=actor_role, reason=reason)
+        require(not entity_id and not parent_revision_id, "INVALID_ARGUMENT", "基础草稿不接受增强章节修订参数。")
+        return self.reviews.save(project_id, body, claims or [])
+
+    @endpoint
+    async def prepare_synthesis(self, project_id: ID, snapshot_id: ID,
+                                subquestion: Annotated[str, Field(min_length=1, max_length=4000)],
+                                version_ids: list[str] | None = None, plan_id: str | None = None) -> dict:
+        """提交可恢复的本地综合材料准备任务；使用文献卡、问题相关证据及统一快照，不调用模型。"""
+        return self.review_preparation.submit(project_id, subquestion, snapshot_id, version_ids, plan_id, synthesis=True)
+
+    @endpoint
+    async def save_synthesis(self, project_id: ID, snapshot_id: ID, synthesis: SynthesisInput,
+                             entity_id: str | None = None, parent_revision_id: str | None = None,
+                             actor_role: Literal["agent", "user"] = "agent",
+                             reason: Annotated[str, Field(min_length=1, max_length=2000)] = "initial") -> dict:
+        """保存主题比较和稳定多来源论断；支持、反驳、限定与背景分别记录。"""
+        return self.review_writing.save_synthesis(project_id, snapshot_id, synthesis, entity_id=entity_id,
+            parent_revision_id=parent_revision_id, actor_role=actor_role, reason=reason)
+
+    @endpoint
+    async def save_review_check(self, project_id: ID, section_id: ID, check: ReviewCheckInput,
+                                actor_role: Literal["agent", "user"] = "agent",
+                                reason: Annotated[str, Field(min_length=1, max_length=2000)] = "review") -> dict:
+        """保存调用方模型或用户的逐句与论断核查意见、反向提纲；不认证语义正确。"""
+        return self.review_writing.save_check(project_id, section_id, check, actor_role=actor_role, reason=reason)
 
     @endpoint
     async def export_bibliography(self, version_ids: IDS,
@@ -672,6 +721,8 @@ class Application:
     @endpoint
     async def get_job(self, job_id: ID) -> dict:
         """读取持久任务进度、完成产物、失败原因或恢复检查点。"""
+        job = self.store.get(job_id, "job")
+        self.review_preparation.record_delivery(job)
         return self.jobs.present(self.store.get(job_id, "job"))
 
     @endpoint
@@ -686,6 +737,7 @@ class Application:
 
 
 TOOL_NAMES = [
+    "prepare_synthesis", "save_synthesis", "save_review_check",
     "set_review_assistance", "save_review_plan", "create_corpus_snapshot", "save_paper_card",
     "get_review_progress", "get_review_artifact",
     "create_project", "list_projects", "list_papers", "save_screening_policy", "review_decision",
