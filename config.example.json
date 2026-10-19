@@ -37,12 +37,14 @@
         "fsso.cnki.net",
         "idp.xmu.edu.cn",
         "login.cnki.net",
-        "ids.xmu.edu.cn"
+        "ids.xmu.edu.cn",
+        "bar.cnki.net"
       ],
       "provider_hosts": [
         "kns.cnki.net",
         "www.cnki.net",
-        "fsso.cnki.net"
+        "fsso.cnki.net",
+        "bar.cnki.net"
       ],
       "resource_hosts": [
         "piccache.cnki.net",
@@ -57,8 +59,8 @@
       },
       "selectors": {
         "institution_label": ".ecp_header_unitName",
-        "search_input": "#txt_search",
-        "search_button": "input.search-btn",
+        "search_input": ".search-main input.search-input:visible",
+        "search_button": ".search-main input.search-btn:visible",
         "search_field_trigger": ".search-main .sort-default",
         "search_field_label": ".search-main .sort-default > span",
         "search_field_labels": {
@@ -80,7 +82,9 @@
           "relevance": "#orderList #FFD",
           "latest": "#orderList #PT",
           "cited": "#orderList #CF"
-        }
+        },
+        "pdf_download": "#pdfDown:visible",
+        "resource_available": "#pdfDown:visible"
       },
       "subscriptions": [],
       "verified_at": "2026-10-19T10:40:17+00:00",

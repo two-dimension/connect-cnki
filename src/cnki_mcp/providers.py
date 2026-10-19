@@ -204,8 +204,12 @@ class CNKIProvider:
             raise AppError("SOURCE_LAYOUT_CHANGED", "结果等待超时或页面结构变化，停止采集。") from None
         await self.guard_page(page, profile, session_id)
         await self.verify_field(page, profile, query.field)
-        if page_number == 1 and sort != selectors.default_sort:
-            await self.apply_sort(page, profile, session_id, sort)
+        if page_number == 1 and sort in selectors.sort_controls:
+            selected = page.locator(selectors.sort_controls[sort])
+            already_selected = selectors.sort_active_class and await selected.count() and selectors.sort_active_class in (
+                (await selected.first.get_attribute("class")) or "").split()
+            if not already_selected:
+                await self.apply_sort(page, profile, session_id, sort)
         if selectors.sort_active_class and sort in selectors.sort_controls:
             selected = page.locator(selectors.sort_controls[sort])
             require(await selected.count() and selectors.sort_active_class in (
@@ -303,26 +307,70 @@ class CNKIProvider:
             await page.close()
 
     async def download(self, context, profile: Institution, session_id: str, paper: dict, target):
+        from playwright.async_api import Error
+
         detail_url = self.detail_locator(session_id, paper)
         await self.throttle(profile.institution_id, "fulltext_download")
         page = await context.new_page()
+        owned_pages = [page]
+        attached = []
+        preserve_pages = False
+        pending_download = asyncio.get_running_loop().create_future()
+
+        def received(download):
+            if not pending_download.done():
+                pending_download.set_result(download)
+
+        def attach(opened):
+            if opened not in owned_pages:
+                owned_pages.append(opened)
+            opened.on("download", received)
+            attached.append(opened)
+
+        attach(page)
+        context.on("page", attach)
         try:
             await self.goto(page, detail_url, profile, session_id)
             await self.guard_page(page, profile, session_id)
             selectors = profile.selectors
             if selectors.not_subscribed and await page.locator(selectors.not_subscribed).count():
                 raise AppError("RESOURCE_NOT_SUBSCRIBED", "此资源不在当前订购范围内。")
-            require(selectors.resource_available and await page.locator(selectors.resource_available).count(),
+            available = page.locator(selectors.resource_available) if selectors.resource_available else None
+            require(available and await available.count() and await available.first.is_visible(),
                     "ACCESS_UNDETERMINED", "没有可靠的单篇全文访问证据。", "请使用正常网页人工核验。")
-            async with page.expect_download(timeout=self.settings.network_timeout_ms) as event:
-                await page.locator(selectors.pdf_download).click()
-            download = await event.value
+            control = page.locator(selectors.pdf_download)
+            require(await control.count() == 1 and await control.is_visible() and await control.is_enabled(),
+                    "SOURCE_LAYOUT_CHANGED", "单篇 PDF 下载控件缺失或不唯一。")
+            try:
+                await control.click()
+                download = await asyncio.wait_for(pending_download, self.settings.network_timeout_ms / 1000)
+            except (TimeoutError, Error):
+                self.access.assert_not_blocked(session_id)
+                checked = await self.access.verify_in_context(session_id, context)
+                require(checked["state"] == "ready", checked.get("error_code") or "AUTHENTICATION_REQUIRED",
+                        "下载需要重新认证或人工验证。", "请在保留的专用窗口处理后重新核验。")
+                for opened in owned_pages:
+                    if not opened.is_closed() and urlsplit(opened.url).hostname in profile.provider_hosts:
+                        await self.guard_page(opened, profile, session_id)
+                raise AppError("ACCESS_UNDETERMINED", "来源未产生可校验的 PDF 下载。",
+                               "请在保留的专用窗口核验单篇访问状态。") from None
             validate_url(download.url, profile.allowed_hosts)
             require(await download.failure() is None, "FILE_VALIDATION_FAILED", "浏览器下载失败。")
             await download.save_as(target)
             self.access.assert_not_blocked(session_id)
+        except AppError as error:
+            preserve_pages = bool(error.action)
+            raise
         finally:
-            await page.close()
+            context.remove_listener("page", attach)
+            for opened in attached:
+                opened.remove_listener("download", received)
+            if not pending_download.done():
+                pending_download.cancel()
+            if not preserve_pages:
+                for opened in owned_pages:
+                    if not opened.is_closed():
+                        await opened.close()
 
     def detail_locator(self, session_id: str, paper: dict) -> str:
         require(paper.get("source_provider") == "cnki", "SOURCE_NOT_SUPPORTED", "该版本不是知网来源。")

@@ -5,6 +5,7 @@ import argparse
 import asyncio
 import json
 import sys
+import uuid
 from pathlib import Path
 
 from mcp import ClientSession, StdioServerParameters
@@ -23,13 +24,14 @@ async def run(arguments):
         async with ClientSession(read, write) as client:
             await client.initialize()
 
-            async def call(name, values):
+            async def call(name, values, display=True):
                 result = await client.call_tool(name, values)
                 data = result.structuredContent
                 if data is None:
                     emit({"tool": name, "protocol_error": result.isError})
                     return {"status": "failed", "data": None}
-                emit({"tool": name, "result": data})
+                if display:
+                    emit({"tool": name, "result": data})
                 return data
 
             session_id = None
@@ -48,9 +50,11 @@ async def run(arguments):
                     project_id = project["data"]["project_id"]
                 cursor = None
                 last_version_id = None
+                last_job_id = None
+                last_asset_id = None
                 search_values = {"query": {"text": arguments.query, "field": arguments.field},
                                  "limit": arguments.limit, "sort": arguments.sort}
-                print("同一 MCP 会话已保留。命令：verify / search / next / paper / detail / inspect / status / close。", flush=True)
+                print("同一 MCP 会话已保留。命令：verify / search / next / paper / detail / download / job / parse / read / inspect / status / close。", flush=True)
                 while True:
                     try:
                         line = (await asyncio.to_thread(input, "pilot> ")).strip()
@@ -71,6 +75,38 @@ async def run(arguments):
                             continue
                         await call("get_paper", {"version_id": last_version_id, "refresh": command == "detail",
                                                  "session_id": session_id if command == "detail" else None})
+                    elif command in {"download", "job", "parse", "read"}:
+                        if not last_version_id:
+                            emit({"code": "NO_SELECTED_PAPER", "message": "请先取得检索结果。"})
+                            continue
+                        if command == "download":
+                            result = await call("acquire_fulltext", {"project_id": project_id, "session_id": session_id,
+                                "version_id": last_version_id, "idempotency_key": f"pilot-{uuid.uuid4().hex}"})
+                            last_job_id = result.get("job_id")
+                            last_asset_id = None
+                        elif command == "job":
+                            if not last_job_id:
+                                emit({"code": "NO_SELECTED_JOB"})
+                                continue
+                            result = await call("get_job", {"job_id": last_job_id})
+                            asset = ((result.get("data") or {}).get("result") or {})
+                            last_asset_id = asset.get("asset_id") or asset.get("id") or last_asset_id
+                        elif command == "parse":
+                            if not last_asset_id:
+                                emit({"code": "NO_DOWNLOADED_ASSET", "message": "请先用 job 确认下载完成。"})
+                                continue
+                            result = await call("parse_fulltext", {"asset_id": last_asset_id})
+                            last_job_id = result.get("job_id")
+                        else:
+                            result = await call("read_paper", {"version_id": last_version_id, "pages": [1]}, display=False)
+                            if result["status"] != "succeeded":
+                                emit({"tool": "read_paper", "result": result})
+                            else:
+                                data = result["data"]
+                                emit({"tool": "read_paper", "status": result["status"], "reading_level": data["reading_level"],
+                                    "quality": data["quality"], "evidence_count": len(data["evidence"]),
+                                    "characters": sum(len(span.get("text", "")) for span in data["evidence"]),
+                                    "truncated": data["truncated"], "needs_ocr_or_manual_review": data["needs_ocr_or_manual_review"]})
                     elif command in {"search", "next"}:
                         if payload:
                             try:
@@ -95,8 +131,9 @@ async def run(arguments):
                         papers = (result.get("data") or {}).get("papers", [])
                         if papers:
                             last_version_id = papers[0].get("version_id") or papers[0].get("id")
+                            last_asset_id = last_job_id = None
                     else:
-                        print("可用命令：verify / search / next / paper / detail / inspect / status / close。", flush=True)
+                        print("可用命令：verify / search / next / paper / detail / download / job / parse / read / inspect / status / close。", flush=True)
             finally:
                 if session_id:
                     await call("close_access_session", {"session_id": session_id})

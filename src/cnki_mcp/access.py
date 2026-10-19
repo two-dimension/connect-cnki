@@ -29,6 +29,7 @@ class BrowserAccess:
         self.guard_locks: dict = {}
         self.guard_errors: dict[str, set[str]] = {}
         self.blocked_request_shapes: dict[str, list[dict]] = {}
+        self.popup_bootstraps: dict[str, set[str]] = {}
 
     async def start(self, institution_id: str, mode: str) -> dict:
         profile = self.settings.institution(institution_id)
@@ -124,7 +125,24 @@ class BrowserAccess:
             return
         try:
             if session_id in self.contexts:
-                await self.ensure_redirect_guard(session_id, profile.institution_id, route.request.frame.page)
+                try:
+                    request_page = route.request.frame.page
+                except Exception:
+                    # A popup's first navigation has no Playwright Frame yet.
+                    # Create a local document first, so its fresh navigation can
+                    # install the redirect guard before any remote request leaves.
+                    seen = self.popup_bootstraps.setdefault(session_id, set())
+                    require(route.request.is_navigation_request() and route.request.method == "GET"
+                            and route.request.url not in seen and len(seen) < 20,
+                            "HOST_NOT_ALLOWED", "新窗口无法安装跳转检查。")
+                    seen.add(route.request.url)
+                    destination = html.escape(route.request.url, quote=True)
+                    await route.fulfill(status=200, content_type="text/html; charset=utf-8",
+                        headers={"cache-control": "no-store", "referrer-policy": "no-referrer"},
+                        body=f'<html><head><meta http-equiv="refresh" content="0;url={destination}"></head>'
+                             '<body>正在打开专用窗口…</body></html>')
+                    return
+                await self.ensure_redirect_guard(session_id, profile.institution_id, request_page)
             await route.fallback()
         except Exception:
             self.guard_errors.setdefault(session_id, set()).add("REQUEST_GUARD_UNAVAILABLE")
@@ -484,6 +502,7 @@ class BrowserAccess:
         self.https_upgrades.pop(session_id, None)
         self.guard_errors.pop(session_id, None)
         self.blocked_request_shapes.pop(session_id, None)
+        self.popup_bootstraps.pop(session_id, None)
         for key in [key for key in self.detail_locators if key[0] == session_id]:
             self.detail_locators.pop(key, None)
         self.store.put("session", {**session, "state": "closed", "error_code": None})
@@ -499,3 +518,4 @@ class BrowserAccess:
             await self.playwright.stop()
         self.redirect_guards.clear()
         self.guard_locks.clear()
+        self.popup_bootstraps.clear()

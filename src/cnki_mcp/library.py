@@ -86,6 +86,7 @@ class Library:
         metadata = {key: value for key, value in paper.items()
                     if key not in {"abstract", "rights", "source_origin"}}
         metadata["abstract"] = protected(paper.get("abstract"), "abstract", paper["rights"])
+        metadata["abstract_status"] = paper.get("abstract_status", "unknown")
         metadata["missing_fields"] = [k for k in ("authors", "year", "source", "doi", "volume", "issue", "pages")
                                       if not paper.get(k)]
         metadata["retraction_status"] = "confirmed" if paper.get("retracted") else "not_checked"

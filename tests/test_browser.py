@@ -8,7 +8,9 @@ from playwright.async_api import async_playwright
 
 from cnki_mcp.config import Institution, PolicyRecord, Selectors, Settings
 from cnki_mcp.core import AppError
-from cnki_mcp.models import SearchQuery
+from cnki_mcp.models import PaperInput, SearchQuery
+
+from .conftest import make_pdf
 
 
 @pytest.mark.browser
@@ -16,10 +18,11 @@ async def test_real_browser_synthetic_search_pagination_and_identity(app):
     fixture = (Path(__file__).parent / "fixtures" / "cnki_synthetic.html").read_text(encoding="utf-8")
     fixture = fixture.replace('<input id="txt_SearchText">', '''<div class="search-main">
         <div class="sort-default" onclick="if(this.dataset.clicked)document.querySelector('#fixture-fields').hidden=false; this.dataset.clicked='1'"><span>主题</span></div>
-        <ul id="fixture-fields" class="sort-list" hidden><li><a onclick="document.querySelector('.search-main .sort-default span').textContent='篇名'; this.parentElement.parentElement.hidden=true">篇名</a></li></ul>
-        <input id="txt_SearchText">''').replace('</button>\n<table', '</button></div>\n<table', 1)
+        <ul id="fixture-fields" class="sort-list" hidden><li><a onclick="document.querySelector('.search-main .sort-default span').textContent='篇名'; document.querySelector('#txt_SearchText').removeAttribute('id'); this.parentElement.parentElement.hidden=true">篇名</a></li></ul>
+        <input id="txt_SearchText" class="search-input">''').replace('</button>\n<table', '</button></div>\n<table', 1)
     fixture = fixture.replace("</html>", '''<ul><li id="fixture-relevance"
-        onclick="this.className='cur'; setTimeout(()=>render(1),70)">相关度</li></ul>
+        onclick="this.className='cur'; setTimeout(()=>render(1),70)">相关度</li>
+        <li id="fixture-latest" onclick="this.className='cur'; setTimeout(()=>render(1),70)">发表时间</li></ul>
         <div class="sort-default"><span>20</span></div></html>''')
     fixture = fixture.replace('<td class="name">', '<td class="name"><input type="checkbox" name="CookieName" value="PRIVATE_CHECKBOX_TOKEN!">')
     search_selectors = Settings.load(Path(__file__).parents[1] / "config.example.json").institution("xmu").selectors
@@ -29,7 +32,8 @@ async def test_real_browser_synthetic_search_pagination_and_identity(app):
         entry_urls={"institution_network": "https://fixture.example/", "carsi": "https://fixture.example/"},
         search_url="https://fixture.example/", allowed_hosts=["fixture.example"], provider_hosts=["fixture.example"],
         selectors=Selectors(institution_label=".institution", default_sort="latest", sort_active_class="cur",
-                            sort_controls={"relevance": "#fixture-relevance"},
+                            search_input=search_selectors.search_input,
+                            sort_controls={"relevance": "#fixture-relevance", "latest": "#fixture-latest"},
                             search_field_trigger=search_selectors.search_field_trigger,
                             search_field_label=search_selectors.search_field_label,
                             search_fields={"title": search_selectors.search_fields["title"]},
@@ -94,6 +98,10 @@ async def test_real_browser_synthetic_search_pagination_and_identity(app):
         assert titled["status"] == "succeeded", titled
         query_page = app.access.query_pages[titled["data"]["query_id"]]
         assert await query_page.locator(".search-main .sort-default > span").inner_text() == "篇名"
+        latest = await app.search_papers(project, sid, SearchQuery(text="fixture remembered sort"), sort="latest", limit=1)
+        assert latest["status"] == "succeeded", latest
+        latest_page = app.access.query_pages[latest["data"]["query_id"]]
+        assert await latest_page.locator("#fixture-latest").get_attribute("class") == "cur"
         # A public homepage and any school name in arbitrary body text must not pass identity checks.
         await page.locator(".institution").evaluate("element => element.textContent = '其他大学'")
         for extra in context.pages[1:]:
@@ -143,6 +151,85 @@ async def test_real_browser_synthetic_search_pagination_and_identity(app):
         assert missing["data"]["error_code"] == "BROWSER_SESSION_UNAVAILABLE"
         await browser.close()
         app.access.contexts.clear()
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("popup_path", ["/download-window", "/fixture.pdf"])
+async def test_pdf_download_in_new_window_is_registered_and_windows_are_closed(app, tmp_path, popup_path):
+    pdf = tmp_path / "fixture.pdf"
+    make_pdf(pdf)
+    profile = Institution(institution_id="download_fixture", display_names=["Fixture University"],
+        allowed_hosts=["fixture.example"], provider_hosts=["fixture.example"],
+        selectors=Selectors(institution_label=".institution", pdf_download="#pdfDown:visible",
+                            resource_available="#pdfDown:visible"),
+        policy_records=[PolicyRecord(operation=operation, state="allowed", source="Synthetic download fixture",
+            verified_by="tests", verified_at=datetime.now(UTC) - timedelta(days=1),
+            expires_at=datetime.now(UTC) + timedelta(days=1), resource_types=["*"], min_interval_seconds=0.1)
+            for operation in ("automated_search", "metadata_collect", "fulltext_download", "local_parse_index")])
+    app.settings.institutions.append(profile)
+    async with async_playwright() as playwright:
+        options = {"headless": True}
+        if os.environ.get("CNKI_TEST_BROWSER_CHANNEL"):
+            options["channel"] = os.environ["CNKI_TEST_BROWSER_CHANNEL"]
+        browser = await playwright.chromium.launch(**options)
+        context = await browser.new_context(accept_downloads=True)
+        with app.store.transaction():
+            sid = app.store.put("session", {"institution_id": profile.institution_id,
+                "mode": "institution_network", "state": "waiting_for_user"})["id"]
+        app.access.contexts[sid] = context
+        app.access.locks[sid] = asyncio.Lock()
+        received_urls = []
+
+        async def serve(route):
+            received_urls.append(route.request.url)
+            if route.request.url.endswith("/popup-redirect"):
+                await route.fulfill(status=302, headers={"location": "https://unapproved.fixture.example/blocked"})
+                return
+            if route.request.url.endswith("/fixture.pdf"):
+                await route.fulfill(status=200, content_type="application/pdf", body=pdf.read_bytes(),
+                                    headers={"Content-Disposition": 'attachment; filename="fixture.pdf"'})
+            elif route.request.url.endswith("/download-window"):
+                await route.fulfill(status=200, content_type="text/html",
+                                    body='<script>setTimeout(()=>location.href="/fixture.pdf",70)</script>')
+            else:
+                await route.fulfill(status=200, content_type="text/html", body=f'''
+                    <div class="institution">Fixture University</div><div class="wx-tit"><h1>Fixture download</h1></div>
+                    <a id="pdfDown" target="_blank" href="{popup_path}">PDF下载</a>
+                    <a id="pdfDown" hidden>PDF下载</a>''')
+
+        await context.route("**/*", serve)
+        await context.route("**/*", lambda route: app.access.route_request(sid, profile, route))
+        homepage = await context.new_page()
+        await homepage.goto("https://fixture.example/")
+        assert (await app.verify_access_session(sid))["data"]["state"] == "ready"
+        project = (await app.create_project("Download fixture", profile.institution_id))["data"]["project_id"]
+        record = PaperInput(title="Fixture download", authors=["Fixture Author"], year=2024,
+                            source_provider="cnki", source_id="CJFD:DOWNLOADFIXTURE",
+                            detail_url="https://fixture.example/detail?filename=DOWNLOADFIXTURE")
+        rights = {"origin": "institution", "institution_id": profile.institution_id, "resource_type": "journal"}
+        version = app.library.ingest(project, record, rights, "cnki_search")["version_id"]
+        app.store.db.commit()
+        submitted = await app.acquire_fulltext(project, sid, version, "synthetic-download")
+        assert submitted["status"] == "succeeded", submitted
+        await app.jobs.tasks[submitted["job_id"]]
+        result = (await app.get_job(submitted["job_id"]))["data"]
+        diagnostic = await app.access.inspect(sid)
+        assert result["state"] == "succeeded", str({"error": result.get("error"),
+            "blocked_hosts": diagnostic["blocked_hosts"], "guard_errors": diagnostic["guard_errors"]})
+        asset = result["result"]
+        assert asset["validation"] == "pdf_structural" and asset["version_id"] == version
+        assert len(context.pages) == 1 and context.pages[0] == homepage
+        assert sum(url.endswith(popup_path) for url in received_urls) == 1
+        await homepage.evaluate("window.open('/popup-redirect','_blank')")
+
+        async def wait_for_block():
+            while "unapproved.fixture.example" not in app.access.blocked_hosts.get(sid, {}).get("navigation", set()):
+                await asyncio.sleep(0.02)
+
+        await asyncio.wait_for(wait_for_block(), 5)
+        assert not any("unapproved.fixture.example" in url for url in received_urls)
+        await app.close_access_session(sid)
+        await browser.close()
 
 
 @pytest.mark.browser
