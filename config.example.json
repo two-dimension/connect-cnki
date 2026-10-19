@@ -69,10 +69,10 @@
           "source": "文献来源"
         },
         "search_fields": {
-          "title": "a:text-is(\"篇名\")",
-          "keywords": "a:text-is(\"关键词\")",
-          "author": "a:text-is(\"作者\")",
-          "source": "a:text-is(\"文献来源\")"
+          "title": ".sort-list >> text=\"篇名\"",
+          "keywords": ".sort-list >> text=\"关键词\"",
+          "author": ".sort-list >> text=\"作者\"",
+          "source": ".sort-list >> text=\"文献来源\""
         },
         "default_sort": "latest",
         "sort_active_class": "cur",

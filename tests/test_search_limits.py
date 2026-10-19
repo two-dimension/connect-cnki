@@ -32,7 +32,7 @@ async def test_both_operation_caps_limit_collection_and_new_queries(app, monkeyp
     async def page(*args, record_limit=None):
         requested_limits.append(record_limit)
         return [PaperInput(title=f"Synthetic quota paper {index}", source_id=f"fixture:{index}")
-                for index in range(record_limit)], True
+                for index in range(record_limit)], True, True
 
     monkeypatch.setattr(app, "online", online)
     monkeypatch.setattr(app.provider, "page", page)
@@ -42,6 +42,34 @@ async def test_both_operation_caps_limit_collection_and_new_queries(app, monkeyp
     assert result["data"]["stop_reason"] == "permission_budget" and result["data"]["next_cursor"] is None
     repeat = await app.search_papers(project, "session_fixture", SearchQuery(text="another query"))
     assert repeat["error"]["code"] == "BUDGET_EXCEEDED" and requested_limits == [2]
+
+
+async def test_truncated_page_with_existing_duplicates_stops_without_skipping_tail(app, monkeypatch):
+    institution = profile()
+    app.settings.institutions.append(institution)
+    project = (await app.create_project("Existing duplicate fixture", "fixture", budget=2))["data"]["project_id"]
+    record = PaperInput(title="Existing fixture paper", authors=["Fixture Author"], year=2024,
+                        source_id="fixture:existing", source_provider="cnki")
+    rights = {"origin": "institution", "institution_id": "fixture", "resource_type": "journal"}
+    app.library.ingest(project, record, rights, "cnki_search")
+    app.store.db.commit()
+
+    @asynccontextmanager
+    async def online(*args):
+        yield object(), institution
+
+    async def page(*args, record_limit=None):
+        assert record_limit == 1
+        return [record], True, True  # An unseen second row remains on this source page.
+
+    monkeypatch.setattr(app, "online", online)
+    monkeypatch.setattr(app.provider, "page", page)
+    result = await app.search_papers(project, "session_fixture", SearchQuery(text="fixture"))
+    assert result["status"] == "succeeded", result
+    assert len(app.store.papers(project)) == 1
+    assert result["data"]["stop_reason"] == "source_page_budget"
+    assert result["data"]["source_page_truncated"] is True
+    assert result["data"]["next_cursor"] is None and result["data"]["exhaustive"] is False
 
 
 async def test_metadata_rate_requirement_is_applied_to_search(app, monkeypatch):

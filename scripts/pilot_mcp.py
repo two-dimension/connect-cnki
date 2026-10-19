@@ -48,10 +48,14 @@ async def run(arguments):
                     project_id = project["data"]["project_id"]
                 cursor = None
                 last_version_id = None
+                search_values = {"query": {"text": arguments.query, "field": arguments.field},
+                                 "limit": arguments.limit, "sort": arguments.sort}
                 print("同一 MCP 会话已保留。命令：verify / search / next / paper / detail / inspect / status / close。", flush=True)
                 while True:
                     try:
-                        command = (await asyncio.to_thread(input, "pilot> ")).strip().lower()
+                        line = (await asyncio.to_thread(input, "pilot> ")).strip()
+                        command, _, payload = line.partition(" ")
+                        command = command.lower()
                     except EOFError:
                         break
                     if command in {"close", "quit", "exit"}:
@@ -68,12 +72,22 @@ async def run(arguments):
                         await call("get_paper", {"version_id": last_version_id, "refresh": command == "detail",
                                                  "session_id": session_id if command == "detail" else None})
                     elif command in {"search", "next"}:
+                        if payload:
+                            try:
+                                override = json.loads(payload)
+                                if command != "search" or not isinstance(override, dict) or not set(override) <= {
+                                    "query", "filters", "sort", "limit",
+                                }:
+                                    raise ValueError
+                            except (ValueError, TypeError):
+                                emit({"code": "INVALID_PILOT_QUERY", "message": "search 后只接受 query、filters、sort、limit 的 JSON 对象。"})
+                                continue
+                            search_values = {**search_values, **override}
+                            cursor = None
                         if command == "next" and not cursor:
                             emit({"code": "NO_NEXT_CURSOR", "message": "没有可继续的游标。"})
                             continue
-                        values = {"project_id": project_id, "session_id": session_id,
-                            "query": {"text": arguments.query, "field": arguments.field}, "limit": arguments.limit,
-                            "sort": arguments.sort}
+                        values = {"project_id": project_id, "session_id": session_id, **search_values}
                         if command == "next":
                             values["cursor"] = cursor
                         result = await call("search_papers", values)

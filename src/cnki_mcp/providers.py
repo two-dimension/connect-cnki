@@ -148,25 +148,31 @@ class CNKIProvider:
             await self.guard_page(page, profile, session_id)
             from playwright.async_api import Error
 
+            stage = "字段菜单"
             try:
                 if query.field != "subject":
                     if selectors.search_field_trigger:
                         trigger = page.locator(selectors.search_field_trigger)
                         await trigger.wait_for(state="visible")
-                        await trigger.hover()
-                        if not await page.locator(selectors.search_fields[query.field]).is_visible():
-                            await trigger.click()
+                        await trigger.click()
+                    stage = "字段选项"
                     await page.locator(selectors.search_fields[query.field]).click()
+                stage = "字段标签"
                 await self.verify_field(page, profile, query.field)
+                stage = "筛选条件"
                 for key, value in controls.items():
                     control = page.locator(selectors.filter_controls[key])
                     await control.fill(str(value) if not isinstance(value, list) else ";".join(value))
+                stage = "检索框"
                 await page.locator(selectors.search_input).fill(query.text)
+                await self.throttle(profile.institution_id, "automated_search", "metadata_collect")
+                stage = "查询提交"
                 await page.locator(selectors.search_button).click()
+                self.last_request[profile.institution_id] = time.monotonic()
                 await page.wait_for_load_state("domcontentloaded")
             except Error:
                 await self.guard_page(page, profile, session_id)
-                raise AppError("SOURCE_LAYOUT_CHANGED", "检索控件未按预期出现或完成操作，请更新入口适配。") from None
+                raise AppError("SOURCE_LAYOUT_CHANGED", f"{stage}控件未按预期出现或完成操作，请更新入口适配。") from None
         else:
             page = self.access.query_pages.get(query_id)
             require(page and not page.is_closed(), "CURSOR_EXPIRED", "浏览器检索快照已丢失，请重新检索。")
@@ -174,6 +180,7 @@ class CNKIProvider:
             previous = await page.locator(selectors.result_rows).all_text_contents()
             try:
                 await page.locator(selectors.next_page).click()
+                self.last_request[profile.institution_id] = time.monotonic()
                 await page.wait_for_function(
                     """({selector, old}) => JSON.stringify(Array.from(document.querySelectorAll(selector),
                     row => row.textContent)) !== JSON.stringify(old)""",
@@ -197,14 +204,17 @@ class CNKIProvider:
                 (await selected.first.get_attribute("class")) or "").split(),
                 "SOURCE_LAYOUT_CHANGED", "来源未确认所请求的排序，停止返回结果。")
         detail_locators = {}
-        records = extract_results(await page.content(), page.url, profile, record_limit, detail_locators)
+        html = await page.content()
+        source_page_truncated = record_limit is not None and len(
+            BeautifulSoup(html, "html.parser").select(selectors.result_rows)) > record_limit
+        records = extract_results(html, page.url, profile, record_limit, detail_locators)
         for source_id, locator in detail_locators.items():
             self.access.detail_locators[(session_id, source_id)] = locator
         next_button = page.locator(selectors.next_page)
         has_next = bool(await next_button.count() and await next_button.first.is_visible()
                         and await next_button.first.is_enabled()
                         and "disabled" not in ((await next_button.first.get_attribute("class")) or "").lower())
-        return records, has_next
+        return records, has_next, source_page_truncated
 
     async def verify_field(self, page, profile: Institution, field: str):
         selectors = profile.selectors
@@ -226,6 +236,7 @@ class CNKIProvider:
         await self.throttle(profile.institution_id, "automated_search", "metadata_collect")
         try:
             await control.click()
+            self.last_request[profile.institution_id] = time.monotonic()
             await page.wait_for_load_state("domcontentloaded")
             if first:
                 try:

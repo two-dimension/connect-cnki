@@ -67,6 +67,8 @@ uv run python scripts/pilot_mcp.py --query 大语言模型 --limit 3 --budget 20
 
 此入口使用官方 MCP 客户端启动 stdio 服务并保留同一会话。输入 `verify` 核验，`search` 提交检索，`next` 继续游标，`paper` 读取首条本地题录，`detail` 显式刷新其摘要，`inspect` 查看脱敏布局诊断，`close` 正常关闭。出现安全验证时在同一窗口亲自完成后再核验；可传 `--project-id` 复用已有联调项目。MCP 本身也支持 `get_access_status(inspect_page=true)`，默认状态查询仍不读取页面。
 
+同一联调窗口可输入 `search {"query":{"text":"大语言模型","field":"title"},"sort":"relevance","limit":3}` 调整查询；只接受 `query / filters / sort / limit`，随后 `next` 保持该组条件。实际支持范围由档案和页面核验决定。预算截断来源页时会显式标记，并在缓存用完后停止，不跨过未采集的页尾。
+
 新版知网使用带签名的文章详情链接。此类链接仅保留在对应会话内存中，题录以稳定来源标识入库，`detail_url` 可为空；重启后须在新会话重新检索以恢复详情入口。摘要标记 `source_text / partial / unknown`，折叠内容未能展开时返回 `partial` 和提示。
 
 额外的静态资源主机使用 `resource_hosts` 单独配置，目前包含实际页面请求的 `piccache.cnki.net` 及官网加载的腾讯验证 SDK 主机。它只允许脚本、样式、图片、字体和媒体子资源；页面导航、XHR 和 fetch 仍须符合 `allowed_hosts`。官网的机构组件由 `login.cnki.net` 提供，作为精确认证主机单独放行。专用上下文禁用 service worker，避免缓存工作线程绕过路由检查。

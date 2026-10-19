@@ -276,10 +276,10 @@ class Application:
             require(remaining > 0 and project_remaining > 0, "BUDGET_EXCEEDED", "候选预算已用完。")
             async with self.online(session_id, project, run) as (context, profile):
                 if not run["cached"]:
-                    records, has_next = await self.provider.page(context, profile, session_id, run["id"], query,
+                    records, has_next, truncated = await self.provider.page(context, profile, session_id, run["id"], query,
                                                                 filters, sort, run["pages_read"] + 1,
                                                                 record_limit=min(remaining, project_remaining))
-                    run.update(cached=[r.model_dump() for r in records], has_next=has_next,
+                    run.update(cached=[r.model_dump() for r in records], has_next=has_next, source_page_truncated=truncated,
                                pages_read=run["pages_read"] + 1)
                 # Another session or a local import may have filled the project
                 # while this request awaited the provider. Recheck before ingestion.
@@ -297,11 +297,13 @@ class Application:
                 run.update(cached=rest, collected=run["collected"] + len(selected))
                 budget_hit = run["collected"] >= candidate_cap or len(self.store.papers(project_id)) >= candidate_cap
                 end = not rest and not run["has_next"]
+                truncated_end = not rest and run.get("source_page_truncated", False)
                 next_cursor = None
-                if not end and not budget_hit:
+                if not end and not budget_hit and not truncated_end:
                     next_cursor = self.store.put("cursor", {"query_id": run["id"], "consumed": False})["id"]
                 budget_reason = "permission_budget" if candidate_cap < project["budget"] else "candidate_budget"
-                run["stop_reason"] = budget_reason if budget_hit else "source_end" if end else "page_limit"
+                run["stop_reason"] = (budget_reason if budget_hit else "source_page_budget" if truncated_end
+                                      else "source_end" if end else "page_limit")
                 run["applied_sort"] = sort
                 run["sort_verification"] = "active_control_match" if (
                     profile.selectors.sort_active_class and sort in profile.selectors.sort_controls) else "configured_default"
@@ -311,6 +313,7 @@ class Application:
                 return {"query_id": run["id"], "papers": output, "next_cursor": next_cursor,
                         "pages_read": run["pages_read"], "collected": run["collected"],
                         "effective_candidate_budget": candidate_cap,
+                        "source_page_truncated": run.get("source_page_truncated", False),
                         "applied_sort": sort, "sort_verification": run["sort_verification"],
                         "stop_reason": run["stop_reason"], "exhaustive": False, "fetched_at": now()}
 
