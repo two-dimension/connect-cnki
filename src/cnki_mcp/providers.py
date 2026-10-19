@@ -14,13 +14,13 @@ from .models import PaperInput, SearchFilters, SearchQuery
 from .policy import PolicyGate
 
 
-def extract_results(html: str, base_url: str, profile: Institution) -> list[PaperInput]:
+def extract_results(html: str, base_url: str, profile: Institution, record_limit: int | None = None) -> list[PaperInput]:
     soup, records = BeautifulSoup(html, "html.parser"), []
     selectors = profile.selectors
     rows = soup.select(selectors.result_rows)
     if not rows:
         require(bool(soup.select(selectors.empty_results)), "SOURCE_LAYOUT_CHANGED", "检索结果结构未知，停止采集。")
-    for row in rows:
+    for row in rows[:record_limit]:
         link = row.select_one(selectors.title_link)
         require(link and link.get("href") and link.get_text(strip=True),
                 "SOURCE_LAYOUT_CHANGED", "结果行缺少题名或详情地址。")
@@ -56,10 +56,10 @@ class CNKIProvider:
         self.settings, self.access, self.gate = settings, access, gate
         self.last_request: dict[str, float] = {}
 
-    async def throttle(self, institution_id: str, operation: str):
-        policy = self.gate.check(institution_id, operation)
+    async def throttle(self, institution_id: str, *operations: str):
+        interval = max(self.gate.check(institution_id, operation).min_interval_seconds for operation in operations)
         elapsed = time.monotonic() - self.last_request.get(institution_id, 0)
-        delay = policy.min_interval_seconds - elapsed
+        delay = interval - elapsed
         if delay > 0:
             await asyncio.sleep(delay)
         self.last_request[institution_id] = time.monotonic()
@@ -100,7 +100,8 @@ class CNKIProvider:
                 await asyncio.sleep(2 ** attempt)
 
     async def page(self, context, profile: Institution, session_id: str, query_id: str,
-                   query: SearchQuery, filters: SearchFilters, sort: str, page_number: int):
+                   query: SearchQuery, filters: SearchFilters, sort: str, page_number: int,
+                   record_limit: int | None = None):
         selectors = profile.selectors
         # Reject unsupported conditions before submitting any search; never silently drop filters.
         if query.field != "subject":
@@ -110,7 +111,7 @@ class CNKIProvider:
                 "UNSUPPORTED_FILTER", "当前入口尚未配置该筛选条件。")
         if sort != "relevance":
             require(sort in selectors.sort_controls, "UNSUPPORTED_SORT", "当前入口尚未核验该排序控件。")
-        await self.throttle(profile.institution_id, "automated_search")
+        await self.throttle(profile.institution_id, "automated_search", "metadata_collect")
         if page_number == 1:
             page = await context.new_page()
             self.access.query_pages[query_id] = page
@@ -147,7 +148,7 @@ class CNKIProvider:
             await self.guard_page(page, profile, session_id)
             raise AppError("SOURCE_LAYOUT_CHANGED", "结果等待超时或页面结构变化，停止采集。") from None
         await self.guard_page(page, profile, session_id)
-        records = extract_results(await page.content(), page.url, profile)
+        records = extract_results(await page.content(), page.url, profile, record_limit)
         next_button = page.locator(selectors.next_page)
         has_next = bool(await next_button.count() and await next_button.first.is_visible()
                         and await next_button.first.is_enabled()

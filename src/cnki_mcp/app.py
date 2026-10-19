@@ -264,15 +264,21 @@ class Application:
             run = self.store.get(run["id"], "query")
             if cursor_record:
                 require(not self.store.get(cursor, "cursor")["consumed"], "CURSOR_CONSUMED", "游标已使用。")
-            remaining = min(project["budget"], search_policy.max_records) - run["collected"]
-            project_remaining = project["budget"] - len(self.store.papers(project_id))
+            candidate_cap = min(project["budget"], search_policy.max_records, metadata_policy.max_records)
+            remaining = candidate_cap - run["collected"]
+            project_remaining = candidate_cap - len(self.store.papers(project_id))
             require(remaining > 0 and project_remaining > 0, "BUDGET_EXCEEDED", "候选预算已用完。")
             async with self.online(session_id, project, run) as (context, profile):
                 if not run["cached"]:
                     records, has_next = await self.provider.page(context, profile, session_id, run["id"], query,
-                                                                filters, sort, run["pages_read"] + 1)
+                                                                filters, sort, run["pages_read"] + 1,
+                                                                record_limit=min(remaining, project_remaining))
                     run.update(cached=[r.model_dump() for r in records], has_next=has_next,
                                pages_read=run["pages_read"] + 1)
+                # Another session or a local import may have filled the project
+                # while this request awaited the provider. Recheck before ingestion.
+                project_remaining = candidate_cap - len(self.store.papers(project_id))
+                require(project_remaining > 0, "BUDGET_EXCEEDED", "候选预算已用完。")
                 take = min(limit, remaining, project_remaining)
                 selected, rest = run["cached"][:take], run["cached"][take:]
                 output = []
@@ -283,18 +289,19 @@ class Application:
                     item = self.library.ingest(project_id, PaperInput.model_validate(value), rights, "cnki_search")
                     output.append(self.library.present(self.store.get(item["version_id"], "version")))
                 run.update(cached=rest, collected=run["collected"] + len(selected))
-                budget_hit = run["collected"] >= min(project["budget"], search_policy.max_records) or (
-                    len(self.store.papers(project_id)) >= project["budget"])
+                budget_hit = run["collected"] >= candidate_cap or len(self.store.papers(project_id)) >= candidate_cap
                 end = not rest and not run["has_next"]
                 next_cursor = None
                 if not end and not budget_hit:
                     next_cursor = self.store.put("cursor", {"query_id": run["id"], "consumed": False})["id"]
-                run["stop_reason"] = "candidate_budget" if budget_hit else "source_end" if end else "page_limit"
+                budget_reason = "permission_budget" if candidate_cap < project["budget"] else "candidate_budget"
+                run["stop_reason"] = budget_reason if budget_hit else "source_end" if end else "page_limit"
                 self.store.put("query", run)
                 if cursor_record:
                     self.store.put("cursor", {**cursor_record, "consumed": True})
                 return {"query_id": run["id"], "papers": output, "next_cursor": next_cursor,
                         "pages_read": run["pages_read"], "collected": run["collected"],
+                        "effective_candidate_budget": candidate_cap,
                         "stop_reason": run["stop_reason"], "exhaustive": False, "fetched_at": now()}
 
     @endpoint
