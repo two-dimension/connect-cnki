@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="zh"><meta charset="utf-8"><title>Artificial CNKI adapter fixture</title>
+<div class="institution">厦门大学</div>
+<input id="txt_SearchText"><button class="search-btn" onclick="render(1)">search</button>
+<table class="result-table-list"><tbody></tbody></table>
+<button id="PageNext" onclick="setTimeout(()=>render(2),70)" hidden>next</button>
+<script>
+function render(n) {
+  document.querySelector('tbody').innerHTML = [1,2].map(i => `<tr>
+    <td class="name"><a class="fz14" href="https://fixture.example/detail?dbcode=CJFD&filename=TEST${n}${i}&token=PRIVATE_TOKEN">Fixture paper ${n}${i}</a></td>
+    <td class="author">Test Author</td><td class="source">Fixture Journal</td><td class="date">2024-01-01</td>
+  </tr>`).join('');
+  document.querySelector('#PageNext').hidden = n === 2;
+}
+</script></html>

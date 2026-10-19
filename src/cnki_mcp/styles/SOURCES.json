@@ -1,0 +1,18 @@
+[
+  {
+    "file": "gbt-7714-2015.csl",
+    "source": "https://raw.githubusercontent.com/citation-style-language/styles/master/china-national-standard-gb-t-7714-2015-numeric.csl",
+    "retrieved_at": "2026-10-19",
+    "sha256": "d9cd04f94bc21a99dc320d0a2230d5a1fb47e3634c17c5820cf975c40db3c0c7",
+    "license": "CC-BY-SA-3.0",
+    "modified": false
+  },
+  {
+    "file": "gbt-7714-2025.csl",
+    "source": "https://raw.githubusercontent.com/citation-style-language/styles/master/china-national-standard-gb-t-7714-2025-numeric.csl",
+    "retrieved_at": "2026-10-19",
+    "sha256": "3b5ab6249ce23b57954c9a4a67e0df422d8759b0573cae7e7de2f2ef94895faf",
+    "license": "CC-BY-SA-3.0",
+    "modified": false
+  }
+]

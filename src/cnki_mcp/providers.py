@@ -29,7 +29,7 @@ def extract_results(html: str, base_url: str, profile: Institution) -> list[Pape
         args = {k.lower(): v for k, v in parse_qs(urlsplit(url).query).items()}
         identity = ":".join([args.get("dbcode", [""])[0], args.get("filename", [""])[0]])
         require(identity.strip(":"), "SOURCE_LAYOUT_CHANGED", "结果缺少稳定来源标识。")
-        def value(selector):
+        def value(selector, row=row):
             element = row.select_one(selector)
             return element.get_text(" ", strip=True) if element else None
         date = value(selectors.date)
@@ -126,7 +126,17 @@ class CNKIProvider:
             page = self.access.query_pages.get(query_id)
             require(page and not page.is_closed(), "CURSOR_EXPIRED", "浏览器检索快照已丢失，请重新检索。")
             await self.guard_page(page, profile, session_id)
+            previous = await page.locator(selectors.result_rows).all_text_contents()
             await page.locator(selectors.next_page).click()
+            try:
+                await page.wait_for_function(
+                    """({selector, old}) => JSON.stringify(Array.from(document.querySelectorAll(selector),
+                    row => row.textContent)) !== JSON.stringify(old)""",
+                    arg={"selector": selectors.result_rows, "old": previous},
+                )
+            except Exception:
+                await self.guard_page(page, profile, session_id)
+                raise AppError("SOURCE_LAYOUT_CHANGED", "分页结果没有变化，停止采集以避免重复页。") from None
         try:
             await page.locator(f"{selectors.result_rows}, {selectors.empty_results}").first.wait_for(state="visible")
         except Exception:

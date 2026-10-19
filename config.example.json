@@ -1,0 +1,45 @@
+{
+  "data_dir": "./data",
+  "import_roots": ["./imports"],
+  "client": {
+    "location": "external",
+    "provider": "openai",
+    "allowed_content": ["metadata"]
+  },
+  "max_candidates": 100,
+  "max_file_mb": 50,
+  "max_pdf_pages": 200,
+  "max_read_chars": 6000,
+  "institutions": [
+    {
+      "institution_id": "xmu",
+      "display_names": ["厦门大学", "Xiamen University"],
+      "access_modes": ["institution_network", "carsi"],
+      "entry_urls": {
+        "institution_network": "https://kns.cnki.net/kns8s/",
+        "carsi": "https://fsso.cnki.net/Shibboleth.sso/Login?entityID=https%3A%2F%2Fidp.xmu.edu.cn%2Fidp%2Fshibboleth&target=https://fsso.cnki.net/secure/default.aspx"
+      },
+      "search_url": "https://kns.cnki.net/kns8s/",
+      "allowed_hosts": ["kns.cnki.net", "www.cnki.net", "fsso.cnki.net", "idp.xmu.edu.cn"],
+      "provider_hosts": ["kns.cnki.net", "www.cnki.net", "fsso.cnki.net"],
+      "selectors": {
+        "institution_label": ""
+      },
+      "subscriptions": [],
+      "rules_version": "xmu-guides-2026-10-19-selectors-unverified",
+      "guide_sources": [
+        "https://library.xmu.edu.cn/zy/dzzy/xwfw/CARSI.htm",
+        "https://library.xmu.edu.cn/zy/dzzy.htm",
+        "https://vpn.xmu.edu.cn/"
+      ],
+      "acceptance": "official_guides_checked_real_school_and_selectors_pending",
+      "policy_records": [
+        {"operation": "automated_search", "state": "unknown", "source": "https://library.xmu.edu.cn/zy/dzzy.htm"},
+        {"operation": "metadata_collect", "state": "unknown", "source": "https://library.xmu.edu.cn/zy/dzzy.htm"},
+        {"operation": "fulltext_download", "state": "unknown", "source": "https://library.xmu.edu.cn/zy/dzzy.htm"},
+        {"operation": "local_parse_index", "state": "unknown", "source": "https://library.xmu.edu.cn/zy/dzzy.htm"},
+        {"operation": "external_model_use", "state": "unknown", "source": "https://library.xmu.edu.cn/zy/dzzy.htm"}
+      ]
+    }
+  ]
+}
