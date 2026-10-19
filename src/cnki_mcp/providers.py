@@ -1,0 +1,180 @@
+from __future__ import annotations
+
+import asyncio
+import re
+import time
+from urllib.parse import parse_qs, urljoin, urlsplit
+
+from bs4 import BeautifulSoup
+
+from .access import BrowserAccess
+from .config import Institution, Settings, public_url, validate_url
+from .core import AppError, require
+from .models import PaperInput, SearchFilters, SearchQuery
+from .policy import PolicyGate
+
+
+def extract_results(html: str, base_url: str, profile: Institution) -> list[PaperInput]:
+    soup, records = BeautifulSoup(html, "html.parser"), []
+    selectors = profile.selectors
+    rows = soup.select(selectors.result_rows)
+    if not rows:
+        require(bool(soup.select(selectors.empty_results)), "SOURCE_LAYOUT_CHANGED", "检索结果结构未知，停止采集。")
+    for row in rows:
+        link = row.select_one(selectors.title_link)
+        require(link and link.get("href") and link.get_text(strip=True),
+                "SOURCE_LAYOUT_CHANGED", "结果行缺少题名或详情地址。")
+        url = urljoin(base_url, link["href"])
+        validate_url(url, profile.provider_hosts)
+        args = {k.lower(): v for k, v in parse_qs(urlsplit(url).query).items()}
+        identity = ":".join([args.get("dbcode", [""])[0], args.get("filename", [""])[0]])
+        require(identity.strip(":"), "SOURCE_LAYOUT_CHANGED", "结果缺少稳定来源标识。")
+        def value(selector):
+            element = row.select_one(selector)
+            return element.get_text(" ", strip=True) if element else None
+        date = value(selectors.date)
+        year_match = re.search(r"\b(19|20)\d{2}\b", date or "")
+        dbcode = args.get("dbcode", [""])[0].upper()
+        paper_type = {"CJFQ": "journal", "CJFD": "journal", "CDFD": "thesis", "CMFD": "thesis",
+                      "CPFD": "conference"}.get(dbcode, "other")
+        records.append(PaperInput(
+            title=link.get_text(" ", strip=True), authors=[x for x in re.split(r"[;；,，\s]+", value(selectors.authors) or "") if x],
+            source=value(selectors.source), year=int(year_match[0]) if year_match else None,
+            source_provider="cnki", source_id=identity, detail_url=public_url(url), paper_type=paper_type,
+        ))
+    return records
+
+
+class CNKIProvider:
+    """Controlled page adapter. Selectors require a real, permitted pilot acceptance."""
+
+    def __init__(self, settings: Settings, access: BrowserAccess, gate: PolicyGate):
+        self.settings, self.access, self.gate = settings, access, gate
+        self.last_request: dict[str, float] = {}
+
+    async def throttle(self, institution_id: str, operation: str):
+        policy = self.gate.check(institution_id, operation)
+        elapsed = time.monotonic() - self.last_request.get(institution_id, 0)
+        delay = policy.min_interval_seconds - elapsed
+        if delay > 0:
+            await asyncio.sleep(delay)
+        self.last_request[institution_id] = time.monotonic()
+
+    async def guard_page(self, page, profile: Institution, session_id: str):
+        self.access.assert_not_blocked(session_id)
+        validate_url(page.url, profile.provider_hosts)
+        require(not any(x in urlsplit(page.url).path.casefold() for x in ("login", "saml", "callback")),
+                "SESSION_EXPIRED", "来源已转到认证页面。")
+        require(not await page.locator('input[type="password"]').count(),
+                "USER_INTERACTION_REQUIRED", "请在浏览器中完成认证。")
+        # Fixed visible status phrases; never return complete DOM or provider exception text.
+        text = await page.locator("body").inner_text()
+        if any(word in text for word in ("访问过于频繁", "访问频繁", "操作频繁")):
+            raise AppError("PROVIDER_RATE_LIMITED", "来源提示访问频繁，已暂停。", "按来源提示等待后重新验证。")
+        if any(word in text for word in ("请输入验证码", "安全验证", "拖动滑块")):
+            raise AppError("USER_INTERACTION_REQUIRED", "来源需要验证码或安全验证。", "请在浏览器中亲自操作。")
+
+    async def goto(self, page, url: str, profile: Institution):
+        validate_url(url, profile.provider_hosts)
+        from playwright.async_api import Error, TimeoutError
+
+        for attempt in range(3):
+            try:
+                response = await page.goto(url, wait_until="domcontentloaded")
+                if response and response.status == 429:
+                    raise AppError("PROVIDER_RATE_LIMITED", "来源限流，已暂停。")
+                if response and response.status >= 500:
+                    if attempt < 2:
+                        await asyncio.sleep(2 ** attempt)
+                        continue
+                    raise AppError("PROVIDER_UNAVAILABLE", "来源暂时不可用。", retryable=True)
+                require(not response or response.status < 400, "PROVIDER_UNAVAILABLE", "来源返回访问错误。")
+                return
+            except (TimeoutError, Error):
+                if attempt == 2:
+                    raise AppError("NETWORK_NOT_READY", "网络访问失败。", "检查校园网或 VPN。", True) from None
+                await asyncio.sleep(2 ** attempt)
+
+    async def page(self, context, profile: Institution, session_id: str, query_id: str,
+                   query: SearchQuery, filters: SearchFilters, sort: str, page_number: int):
+        selectors = profile.selectors
+        # Reject unsupported conditions before submitting any search; never silently drop filters.
+        if query.field != "subject":
+            require(query.field in selectors.search_fields, "UNSUPPORTED_QUERY", "当前档案尚未核验该检索字段。")
+        controls = {k: v for k, v in filters.model_dump().items() if v not in (None, [])}
+        require(all(k in selectors.filter_controls for k in controls),
+                "UNSUPPORTED_FILTER", "当前入口尚未配置该筛选条件。")
+        if sort != "relevance":
+            require(sort in selectors.sort_controls, "UNSUPPORTED_SORT", "当前入口尚未核验该排序控件。")
+        await self.throttle(profile.institution_id, "automated_search")
+        if page_number == 1:
+            page = await context.new_page()
+            self.access.query_pages[query_id] = page
+            await self.goto(page, profile.search_url, profile)
+            await self.guard_page(page, profile, session_id)
+            if query.field != "subject":
+                await page.locator(selectors.search_fields[query.field]).click()
+            for key, value in controls.items():
+                control = page.locator(selectors.filter_controls[key])
+                await control.fill(str(value) if not isinstance(value, list) else ";".join(value))
+            await page.locator(selectors.search_input).fill(query.text)
+            await page.locator(selectors.search_button).click()
+            await page.wait_for_load_state("domcontentloaded")
+            if sort != "relevance":
+                await page.locator(selectors.sort_controls[sort]).click()
+        else:
+            page = self.access.query_pages.get(query_id)
+            require(page and not page.is_closed(), "CURSOR_EXPIRED", "浏览器检索快照已丢失，请重新检索。")
+            await self.guard_page(page, profile, session_id)
+            await page.locator(selectors.next_page).click()
+        try:
+            await page.locator(f"{selectors.result_rows}, {selectors.empty_results}").first.wait_for(state="visible")
+        except Exception:
+            await self.guard_page(page, profile, session_id)
+            raise AppError("SOURCE_LAYOUT_CHANGED", "结果等待超时或页面结构变化，停止采集。") from None
+        await self.guard_page(page, profile, session_id)
+        records = extract_results(await page.content(), page.url, profile)
+        next_button = page.locator(selectors.next_page)
+        has_next = bool(await next_button.count() and await next_button.first.is_visible()
+                        and await next_button.first.is_enabled()
+                        and "disabled" not in ((await next_button.first.get_attribute("class")) or "").lower())
+        return records, has_next
+
+    async def detail(self, context, profile: Institution, session_id: str, paper: dict):
+        require(paper.get("detail_url") and paper.get("source_provider") == "cnki",
+                "SOURCE_NOT_SUPPORTED", "此版本没有已核验的知网详情地址。")
+        await self.throttle(profile.institution_id, "metadata_collect")
+        page = await context.new_page()
+        try:
+            await self.goto(page, paper["detail_url"], profile)
+            await self.guard_page(page, profile, session_id)
+            title = page.locator(profile.selectors.detail_title)
+            require(await title.count(), "SOURCE_LAYOUT_CHANGED", "详情缺少预期题名。")
+            abstract = page.locator(profile.selectors.abstract)
+            return {"title": (await title.first.inner_text()).strip(),
+                    "abstract": (await abstract.first.inner_text()).strip() if await abstract.count() else None}
+        finally:
+            await page.close()
+
+    async def download(self, context, profile: Institution, session_id: str, paper: dict, target):
+        require(paper.get("detail_url") and paper.get("source_provider") == "cnki",
+                "SOURCE_NOT_SUPPORTED", "该版本无知网全文入口。")
+        await self.throttle(profile.institution_id, "fulltext_download")
+        page = await context.new_page()
+        try:
+            await self.goto(page, paper["detail_url"], profile)
+            await self.guard_page(page, profile, session_id)
+            selectors = profile.selectors
+            if selectors.not_subscribed and await page.locator(selectors.not_subscribed).count():
+                raise AppError("RESOURCE_NOT_SUBSCRIBED", "此资源不在当前订购范围内。")
+            require(selectors.resource_available and await page.locator(selectors.resource_available).count(),
+                    "ACCESS_UNDETERMINED", "没有可靠的单篇全文访问证据。", "请使用正常网页人工核验。")
+            async with page.expect_download(timeout=self.settings.network_timeout_ms) as event:
+                await page.locator(selectors.pdf_download).click()
+            download = await event.value
+            validate_url(download.url, profile.allowed_hosts)
+            require(await download.failure() is None, "FILE_VALIDATION_FAILED", "浏览器下载失败。")
+            await download.save_as(target)
+            self.access.assert_not_blocked(session_id)
+        finally:
+            await page.close()
