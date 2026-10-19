@@ -10,6 +10,26 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+SCHEMA_VERSION = 2
+MIGRATIONS = {
+    1: (
+        "CREATE TABLE records (id TEXT PRIMARY KEY, kind TEXT NOT NULL, body TEXT NOT NULL, "
+        "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+        "CREATE INDEX records_kind ON records(kind)",
+        "CREATE TABLE project_papers (project_id TEXT NOT NULL REFERENCES records(id), "
+        "version_id TEXT NOT NULL REFERENCES records(id), PRIMARY KEY(project_id,version_id))",
+        "CREATE TABLE audit (request_id TEXT PRIMARY KEY, operation TEXT NOT NULL, "
+        "status TEXT NOT NULL, error_code TEXT, at TEXT NOT NULL)",
+    ),
+    2: (
+        "ALTER TABLE audit ADD COLUMN elapsed_ms REAL",
+        "ALTER TABLE audit ADD COLUMN stage TEXT NOT NULL DEFAULT 'tool'",
+        "ALTER TABLE audit ADD COLUMN job_id TEXT",
+        "ALTER TABLE audit ADD COLUMN source_kind TEXT",
+        "CREATE INDEX audit_job_id ON audit(job_id)",
+    ),
+}
+
 
 def now() -> str:
     return datetime.now(UTC).isoformat()
@@ -64,30 +84,63 @@ class Store:
         except OSError:
             self._lock_handle.close()
             raise AppError("DATA_DIR_IN_USE", "该数据目录已有服务运行。", "复用现有连接或为另一实例配置独立数据目录。") from None
-        self.db = sqlite3.connect(self.root / "library.sqlite3", check_same_thread=False)
-        self.db.row_factory = sqlite3.Row
-        self.db.execute("PRAGMA foreign_keys=ON")
-        self.db.execute("PRAGMA journal_mode=WAL")
-        version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        require(version <= 1, "SCHEMA_TOO_NEW", "数据库来自更新版本，请升级程序。")
-        self.db.executescript("""
-            CREATE TABLE IF NOT EXISTS records (
-                id TEXT PRIMARY KEY, kind TEXT NOT NULL, body TEXT NOT NULL,
-                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS records_kind ON records(kind);
-            CREATE TABLE IF NOT EXISTS project_papers (
-                project_id TEXT NOT NULL REFERENCES records(id),
-                version_id TEXT NOT NULL REFERENCES records(id),
-                PRIMARY KEY(project_id,version_id)
-            );
-            CREATE TABLE IF NOT EXISTS audit (
-                request_id TEXT PRIMARY KEY, operation TEXT NOT NULL,
-                status TEXT NOT NULL, error_code TEXT, at TEXT NOT NULL
-            );
-            PRAGMA user_version=1;
-        """)
-        self.recover_interrupted()
+        self.db = None
+        try:
+            self.db = sqlite3.connect(self.root / "library.sqlite3", check_same_thread=False)
+            self.db.row_factory = sqlite3.Row
+            self.db.execute("PRAGMA foreign_keys=ON")
+            version = self.db.execute("PRAGMA user_version").fetchone()[0]
+            require(version <= SCHEMA_VERSION, "SCHEMA_TOO_NEW", "数据库来自更新版本，请升级程序。")
+            self._migrate(version)
+            self.db.execute("PRAGMA journal_mode=WAL")
+            self.recover_interrupted()
+        except BaseException:
+            if self.db is not None:
+                self.db.close()
+            self._lock_handle.close()
+            raise
+
+    def _migrate(self, version: int):
+        if version == SCHEMA_VERSION:
+            return
+        if self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1").fetchone():
+            self._backup_before_migration(version)
+        try:
+            self.db.execute("BEGIN IMMEDIATE")
+            for target in range(version + 1, SCHEMA_VERSION + 1):
+                for statement in MIGRATIONS[target]:
+                    self.db.execute(statement)
+                self.db.execute(f"PRAGMA user_version={target}")
+            self.db.commit()
+        except BaseException:
+            self.db.rollback()
+            raise
+
+    def _backup_before_migration(self, version: int):
+        name = f"schema-{version}-to-{SCHEMA_VERSION}-{uuid.uuid4().hex}"
+        snapshot = self.root / "backups" / f"{name}.sqlite3"
+        destination = sqlite3.connect(snapshot)
+        try:
+            # SQLite's backup API includes committed WAL pages in a consistent snapshot.
+            self.db.backup(destination)
+        finally:
+            destination.close()
+        with snapshot.open("rb") as stream:
+            checksum = hashlib.file_digest(stream, "sha256").hexdigest()
+        manifest = {"database": snapshot.name, "sha256": checksum, "created_at": now(),
+                    "from_version": version, "to_version": SCHEMA_VERSION,
+                    "purpose": "pre_migration_snapshot",
+                    "asset_policy": "immutable assets and parses remain in place; references are in the database"}
+        snapshot.with_suffix(".json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def audit(self, request_id: str, operation: str, status: str, error_code: str | None,
+              elapsed_ms: float, *, stage: str = "tool", job_id: str | None = None, source_kind: str = "local"):
+        # Fixed field set: no arguments, query strings, exceptions, credentials or text bodies.
+        self.db.execute(
+            "INSERT INTO audit (request_id,operation,status,error_code,at,elapsed_ms,stage,job_id,source_kind) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (request_id, operation, status, error_code, now(), max(0, round(elapsed_ms, 3)), stage, job_id, source_kind),
+        )
 
     def close(self):
         self.db.close()

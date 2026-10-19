@@ -85,6 +85,8 @@ uv run cnki-mcp --config config.local.json --access-check xmu
 
 配置文件和运行数据不进 Git。依赖精确版本由 `uv.lock` 和 npm lock 锁定；CSL 样式及语言文件来源、许可与 SHA-256 均保存于仓库，见 [第三方声明](THIRD_PARTY_NOTICES.md)。
 
+数据库升级前会自动在数据目录的 `backups/` 保存一致快照和 SHA-256 清单；迁移失败会回滚，保留原有文件及目录使用权。工具与任务审计只记状态、耗时和标识。恢复步骤见 [架构与工具契约](docs/架构与工具契约.md)。
+
 ## 验证与限制
 
 ```powershell

@@ -6,13 +6,13 @@
   "measurements": {
     "local_access_status": {
       "samples": 30,
-      "median_ms": 1.131,
-      "p95_ms": 2.517
+      "median_ms": 1.183,
+      "p95_ms": 1.373
     },
     "local_paper_read": {
       "samples": 30,
-      "median_ms": 1.229,
-      "p95_ms": 1.808
+      "median_ms": 1.196,
+      "p95_ms": 2.896
     }
   }
 }

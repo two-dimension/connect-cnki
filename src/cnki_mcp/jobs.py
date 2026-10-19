@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable
 
-from .core import AppError, Store, digest, now, require
+from .core import AppError, Store, digest, now, require, uid
 
 
 class Jobs:
@@ -32,6 +33,7 @@ class Jobs:
         self.tasks[job["id"]] = asyncio.create_task(self.run(job["id"]))
 
     async def run(self, job_id: str):
+        started = time.perf_counter()
         job = self.store.get(job_id, "job")
         job.update(state="running", progress=0.05, error=None)
         self.store.put("job", job)
@@ -56,6 +58,11 @@ class Jobs:
                                                "retryable": False, "requires_user_action": False, "user_action": ""})
             self.store.put("job", job)
         finally:
+            current = self.store.get(job_id, "job")
+            self.store.audit(uid("event"), job["operation"], current["state"],
+                             (current.get("error") or {}).get("code"), (time.perf_counter() - started) * 1000,
+                             stage="job", job_id=job_id,
+                             source_kind="cnki" if job["operation"] == "acquire_fulltext" else "local")
             self.store.db.commit()
             self.tasks.pop(job_id, None)
 

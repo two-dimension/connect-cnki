@@ -4,6 +4,7 @@ import asyncio
 import functools
 import hashlib
 import json
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -54,6 +55,7 @@ def endpoint(method):
     @functools.wraps(method)
     async def execute(self, *args, **kwargs):
         request_id = uid("request")
+        started = time.perf_counter()
         try:
             data = await method(self, *args, **kwargs)
             self.store.db.commit()
@@ -76,9 +78,12 @@ def endpoint(method):
                       "error": {"code": error.code, "message": error.message, "user_action": error.action,
                                 "retryable": error.retryable, "requires_user_action": bool(error.action),
                                 "job_id": None, "request_id": request_id}}
-        self.store.db.execute("INSERT INTO audit VALUES (?,?,?,?,?)", (
-            request_id, method.__name__, result["status"], result.get("error", {}).get("code"), now(),
-        ))
+        self.store.audit(request_id, method.__name__, result["status"], result.get("error", {}).get("code"),
+                         (time.perf_counter() - started) * 1000, job_id=result.get("job_id"),
+                         source_kind="cnki" if method.__name__ in {
+                             "start_access_session", "verify_access_session", "search_papers", "acquire_fulltext",
+                         } or (method.__name__ == "get_paper" and kwargs.get("refresh", len(args) > 1 and args[1]))
+                         else "local")
         self.store.db.commit()
         return result
     return execute
