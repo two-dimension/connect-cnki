@@ -1,0 +1,9 @@
+{
+  "name": "cnki-mcp-csl-renderer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local CSL rendering helper; no network calls",
+  "dependencies": {
+    "citeproc": "2.4.63"
+  }
+}

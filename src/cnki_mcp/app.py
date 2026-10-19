@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import hashlib
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from pydantic import Field, ValidationError
+from pypdf import __version__ as pypdf_version
 
 from . import __version__
 from .access import BrowserAccess
@@ -101,7 +103,7 @@ class Application:
     async def shutdown(self):
         await self.jobs.shutdown()
         await self.access.shutdown()
-        self.store.db.close()
+        self.store.close()
 
     def project_paper(self, project_id: str, version_id: str) -> dict:
         require(version_id in {p["id"] for p in self.store.papers(project_id)},
@@ -359,7 +361,12 @@ class Application:
         rights = {"origin": "institution", "institution_id": project["institution_id"], "resource_type": paper["paper_type"]}
         for asset in self.store.all("asset"):
             if asset["version_id"] == paper["id"] and asset["rights"] == rights and asset["validation"] == "pdf_structural":
-                return self.documents.present_asset(asset)
+                cached_file = self.store.root / asset["relative_path"]
+                if cached_file.is_file():
+                    with cached_file.open("rb") as stream:
+                        require(hashlib.file_digest(stream, "sha256").hexdigest() == asset["sha256"],
+                                "ASSET_INTEGRITY_FAILED", "缓存文件已被修改，请核验原始文件。")
+                    return self.documents.present_asset(asset)
         temporary = self.store.root / "tmp" / f"{job['id']}.download"
         try:
             async with self.online(arguments["session_id"], project) as (context, profile):
@@ -383,7 +390,8 @@ class Application:
         self.documents.parse_allowed(asset)
         require(parser_profile == "text_pdf", "CAPABILITY_UNAVAILABLE", "OCR/MinerU 尚未启用。")
         return self.jobs.submit("parse_fulltext", {"asset_id": asset_id, "parser_profile": parser_profile,
-                                "config_digest": self.config_digest}, digest(["parse", asset_id, parser_profile, self.config_digest]))
+                                "parser_version": pypdf_version, "config_digest": self.config_digest},
+                                digest(["parse", asset_id, parser_profile, pypdf_version, self.config_digest]))
 
     def selected_parse(self, version_id: str, asset_id: str | None, parse_artifact_id: str | None) -> dict:
         if parse_artifact_id:
@@ -420,7 +428,8 @@ class Application:
             used += len(span["text"])
         return {"version_id": version_id, "asset_id": artifact["asset_id"], "sha256": artifact["sha256"],
                 "parse_artifact_id": artifact["id"], "quality": artifact["quality"], "evidence": selected,
-                "truncated": len(selected) < len(spans), "reading_level": "fulltext"}
+                "truncated": len(selected) < len(spans), "reading_level": "fulltext" if selected else "metadata_only",
+                "needs_ocr_or_manual_review": bool(set(pages).intersection(artifact["scanned_pages"]))}
 
     @endpoint
     async def search_evidence(self, project_id: ID, query: Annotated[str, Field(min_length=1, max_length=500)],

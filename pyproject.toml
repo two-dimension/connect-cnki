@@ -16,7 +16,6 @@ dependencies = [
   "pypdf>=5,<7",
   "bibtexparser>=1.4,<2",
   "rispy>=0.9,<1",
-  "citeproc-py>=0.9,<1",
 ]
 
 [project.scripts]

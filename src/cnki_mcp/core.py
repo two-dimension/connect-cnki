@@ -45,6 +45,25 @@ class Store:
         self.root = root.resolve()
         for folder in ("assets", "parses", "exports", "tmp", "backups"):
             (self.root / folder).mkdir(parents=True, exist_ok=True)
+        self._lock_handle = (self.root / "service.lock").open("a+b")
+        try:
+            import sys
+
+            if sys.platform == "win32":
+                import msvcrt
+
+                if self._lock_handle.tell() == 0:
+                    self._lock_handle.write(b"0")
+                    self._lock_handle.flush()
+                self._lock_handle.seek(0)
+                msvcrt.locking(self._lock_handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(self._lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            self._lock_handle.close()
+            raise AppError("DATA_DIR_IN_USE", "该数据目录已有服务运行。", "复用现有连接或为另一实例配置独立数据目录。") from None
         self.db = sqlite3.connect(self.root / "library.sqlite3", check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys=ON")
@@ -69,6 +88,10 @@ class Store:
             PRAGMA user_version=1;
         """)
         self.recover_interrupted()
+
+    def close(self):
+        self.db.close()
+        self._lock_handle.close()
 
     @contextmanager
     def transaction(self):

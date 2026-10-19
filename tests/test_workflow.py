@@ -1,6 +1,6 @@
 import json
 
-from cnki_mcp.models import ClaimInput, ImportRights, ScreeningRules
+from cnki_mcp.models import ClaimInput, DimensionRating, ImportRights, ScreeningRules
 
 from .conftest import make_pdf
 
@@ -35,6 +35,11 @@ async def test_import_read_review_and_all_exports(app, paper, rights):
     assert (await app.search_evidence(project, "prediction"))["data"]["results"]
     matrix = await app.prepare_review(project)
     assert matrix["data"]["matrix"][0]["reading_level"] == "fulltext"
+    app.settings.max_read_chars = 100
+    bounded = (await app.prepare_review(project))["data"]
+    assert sum(len(e["text"]) for row in bounded["matrix"] for e in row["evidence"]) <= 100
+    assert bounded["evidence_truncated"]
+    app.settings.max_read_chars = 6000
     claim = ClaimInput(text="A fixture reports improvement.", version_id=version, evidence_ids=[evidence["id"]],
                        quotation="12 percent")
     review = await app.save_review(project, f"{claim.text} [{version}]", [claim])
@@ -73,11 +78,14 @@ async def test_outbound_every_surface(app, paper):
     read = await app.read_paper(version)
     assert read["data"]["evidence"][0]["text"]["withheld"]
     spans = app.store.all("evidence")
+    policy = (await app.save_screening_policy(ScreeningRules()))["data"]["policy_id"]
+    rating = DimensionRating(dimension="data_split", score=2, evidence_ids=[spans[0]["id"]], reason=secret)
     claim = ClaimInput(text=secret, version_id=version, evidence_ids=[spans[0]["id"]])
     for result in (
         await app.get_paper(version), await app.list_papers(project), await app.prepare_review(project),
         await app.search_evidence(project, "PRIVATE_BODY"),
         await app.save_review(project, secret, [claim]),
+        await app.screen_papers([version], policy, "fulltext", ratings={version: [rating]}),
     ):
         payload = json.dumps(result)
         assert "PRIVATE_ABSTRACT" not in payload and "PRIVATE_BODY" not in payload
@@ -122,3 +130,22 @@ async def test_paths_validation_and_claim_failures(app, paper, rights, tmp_path)
     ])
     assert not invalid["data"]["validation"]["identity_valid"]
     assert invalid["data"]["validation"]["unknown_citations"] == ["version_fake"]
+
+
+async def test_scan_without_text_never_claims_fulltext_reading(app, paper, rights):
+    from pypdf import PdfWriter
+
+    _, version = await add_paper(app, paper, rights)
+    path = app.settings.import_roots[0] / "scan.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=600, height=800)
+    with path.open("wb") as file:
+        writer.write(file)
+    asset = await app.import_fulltext(version, str(path), rights)
+    submitted = await app.parse_fulltext(asset["data"]["id"])
+    await app.jobs.tasks[submitted["job_id"]]
+    job = (await app.get_job(submitted["job_id"]))["data"]
+    assert job["state"] == "partially_succeeded"
+    assert job["result"]["reading_level"] == "metadata_only"
+    read = (await app.read_paper(version))["data"]
+    assert read["reading_level"] == "metadata_only" and read["needs_ocr_or_manual_review"]

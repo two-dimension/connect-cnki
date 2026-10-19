@@ -20,18 +20,28 @@ class Reviews:
             require(set(version_ids) <= {p["id"] for p in papers}, "PROJECT_MISMATCH", "文献不属于该项目。")
             papers = [p for p in papers if p["id"] in version_ids]
         matrix = []
+        remaining_chars = self.documents.settings.max_read_chars
+        evidence_truncated = False
         for paper in papers:
             parses = [p for p in self.store.all("parse") if p["version_id"] == paper["id"]]
             spans = [e for e in self.store.all("evidence") if e["version_id"] == paper["id"]]
             level = "fulltext" if spans else "abstract_only" if paper.get("abstract") else "metadata_only"
+            selected_spans = []
+            for span in spans[:3]:
+                if len(span["text"]) > remaining_chars:
+                    evidence_truncated = True
+                    continue
+                selected_spans.append(self.documents.span(span))
+                remaining_chars -= len(span["text"])
             matrix.append({
                 "version_id": paper["id"], "bibliography": self.library.present(paper), "reading_level": level,
                 "research_question": None, "object": None, "methods": None, "data_or_experiments": None,
                 "results": None, "limitations": None, "parse_artifacts": parses,
-                "evidence": [self.documents.span(e) for e in spans[:3]],
+                "evidence": selected_spans,
                 "needs_agent_analysis": True, "support_status": "not_assessed",
             })
         return {"project_id": project_id, "question": question or project["question"], "matrix": matrix,
+                "evidence_truncated": evidence_truncated,
                 "outline": ["研究问题与检索范围", "研究方法与条件", "结果共识与分歧", "局限与证据不足", "研究空间"],
                 "instructions": "由调用方 Agent 综合证据；每个实质论断通过 ClaimInput 绑定版本和证据。正文引用使用 [version_id]。",
                 "model_calls": 0}

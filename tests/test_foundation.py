@@ -53,7 +53,18 @@ def test_conservative_identity_and_restart(tmp_path):
         store.put("job", {"state": "running"})
     assert repeat["version_id"] == first["version_id"]
     assert not conflict["matched_existing"] and conflict["duplicate_ids"]
-    store.db.close()
+    store.close()
     reopened = Store(tmp_path)
     assert reopened.all("job")[0]["state"] == "waiting_for_user"
     assert len(reopened.papers(project["id"])) == 2
+    reopened.close()
+
+
+def test_data_directory_has_single_owner(tmp_path):
+    store = Store(tmp_path)
+    with pytest.raises(AppError) as failure:
+        Store(tmp_path)
+    assert failure.value.code == "DATA_DIR_IN_USE"
+    store.close()
+    reopened = Store(tmp_path)
+    reopened.close()

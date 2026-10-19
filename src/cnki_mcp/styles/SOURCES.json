@@ -14,5 +14,21 @@
     "sha256": "3b5ab6249ce23b57954c9a4a67e0df422d8759b0573cae7e7de2f2ef94895faf",
     "license": "CC-BY-SA-3.0",
     "modified": false
+  },
+  {
+    "file": "locales-zh-CN.xml",
+    "source": "https://raw.githubusercontent.com/citation-style-language/locales/master/locales-zh-CN.xml",
+    "retrieved_at": "2026-10-19",
+    "sha256": "95cebc667f2da8fb5b9864e49941e3f867d59f79feba929bc58e8ed6bfd4d582",
+    "license": "CC-BY-SA-3.0",
+    "modified": false
+  },
+  {
+    "file": "locales-en-US.xml",
+    "source": "https://raw.githubusercontent.com/citation-style-language/locales/master/locales-en-US.xml",
+    "retrieved_at": "2026-10-19",
+    "sha256": "ac864c7c21166b4390d82c31792cdc509400727fa0060b43d8aa17e07f9cb079",
+    "license": "CC-BY-SA-3.0",
+    "modified": false
   }
 ]

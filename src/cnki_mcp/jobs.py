@@ -40,7 +40,7 @@ class Jobs:
             result = await self.handlers[job["operation"]](job)
             current = self.store.get(job_id, "job")
             if current["state"] != "cancelled":
-                job.update(state="succeeded", progress=1, result=result, checkpoint="completed")
+                job.update(state=result.pop("_job_state", "succeeded"), progress=1, result=result, checkpoint="completed")
                 self.store.put("job", job)
         except asyncio.CancelledError:
             job.update(state="waiting_for_user" if self.stopping else "cancelled",
@@ -81,10 +81,15 @@ class Jobs:
         if job["state"] in {"succeeded", "partially_succeeded", "running", "queued", "cancelled"}:
             return self.present(job)
         if job["operation"] == "acquire_fulltext":
-            require(session_id == job["arguments"].get("session_id"),
-                    "SESSION_MISMATCH", "恢复下载必须使用原会话，或新建具有新幂等键的下载请求。")
-            session = self.store.get(session_id, "session")
+            original = self.store.get(job["arguments"]["session_id"], "session")
+            session = self.store.get(session_id or original["id"], "session")
+            require(session["institution_id"] == original["institution_id"] and session["mode"] == original["mode"],
+                    "SESSION_MISMATCH", "恢复下载必须使用同学校、同认证模式的已验证会话。")
             require(session["state"] == "ready", "AUTHENTICATION_REQUIRED", "请先验证会话。")
+            if session["id"] != original["id"]:
+                job.setdefault("session_replacements", []).append(
+                    {"before": original["id"], "after": session["id"], "at": now()})
+                job["arguments"]["session_id"] = session["id"]
         job.update(state="queued", error=None)
         self.store.put("job", job)
         self.store.db.commit()

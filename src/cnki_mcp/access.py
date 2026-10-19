@@ -34,7 +34,10 @@ class BrowserAccess:
             if self.playwright is None:
                 self.playwright = await async_playwright().start()
             if self.browser is None or not self.browser.is_connected():
-                self.browser = await self.playwright.chromium.launch(headless=self.settings.browser_headless)
+                options = {"headless": self.settings.browser_headless}
+                if self.settings.browser_channel != "chromium":
+                    options["channel"] = self.settings.browser_channel
+                self.browser = await self.playwright.chromium.launch(**options)
             context = await self.browser.new_context(accept_downloads=True)
             context.set_default_timeout(self.settings.network_timeout_ms)
             self.contexts[session["id"]] = context
@@ -92,6 +95,12 @@ class BrowserAccess:
                     continue
                 if await page.locator('input[type="password"]').count():
                     continue
+                safety = page.get_by_text("安全验证", exact=True)
+                if "安全验证" in await page.title() or (
+                    await safety.count() and await safety.first.is_visible()
+                ):
+                    code = "USER_INTERACTION_REQUIRED"
+                    continue
                 challenge = page.locator('input[name*="captcha"], input[id*="captcha"], .verify-code')
                 if await challenge.count() and await challenge.first.is_visible():
                     code = "USER_INTERACTION_REQUIRED"
@@ -110,7 +119,7 @@ class BrowserAccess:
                 if label:
                     state, code = "paused", "INSTITUTION_MISMATCH"
                     break
-        if state == "waiting_for_user" and session["state"] == "ready":
+        if state == "waiting_for_user" and session["state"] == "ready" and code != "USER_INTERACTION_REQUIRED":
             state, code = "expired", "SESSION_EXPIRED"
         result = {**session, "state": state, "checked_at": now(), "institution_name": detected,
                   "error_code": code, "rules_version": profile.rules_version,

@@ -11,7 +11,9 @@ build/
 data/
 imports/
 config.local.json
+.codex/config.toml
 .env
 *.sqlite*
 playwright/.auth/
 test-results/
+node_modules/

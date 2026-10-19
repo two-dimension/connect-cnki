@@ -115,6 +115,7 @@ class Settings(StrictModel):
     parse_timeout_seconds: int = Field(default=300, ge=1, le=1800)
     network_timeout_ms: int = Field(default=30000, ge=1000, le=120000)
     browser_headless: bool = False
+    browser_channel: Literal["chromium", "msedge", "chrome"] = "chromium"
     csl_styles: dict[str, Path] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -170,6 +171,8 @@ def public_url(url: str | None) -> str | None:
     try:
         parts = urlsplit(url)
         if parts.scheme != "https" or not parts.hostname:
+            return None
+        if any(word in parts.path.casefold() for word in ("saml", "shibboleth", "login", "oauth", "callback")):
             return None
         query = urlencode([(k, v) for k, v in parse_qsl(parts.query)
                            if k.casefold() in {"dbname", "dbcode", "filename"} and re_safe(v)])

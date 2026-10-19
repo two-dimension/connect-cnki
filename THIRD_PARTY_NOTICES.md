@@ -11,7 +11,9 @@
 | pypdf | PDF 结构检查与文本解析 | BSD-3-Clause |
 | bibtexparser | BibTeX 导入导出 | LGPL-3.0-or-later |
 | rispy | RIS 导入导出 | MIT |
-| citeproc-py | CSL 渲染 | BSD-2-Clause |
+| citeproc-js (`citeproc` npm 包) | CSL 渲染 | CPAL-1.0 或 AGPL-3.0 双重许可，详见安装包原始 LICENSE |
+
+格式化文本由 Frank Bennett 编写的 [citeproc-js](https://github.com/Juris-M/citeproc-js) 生成。npm 精确版本及完整性哈希保存在 `src/cnki_mcp/js/package-lock.json`。该组件通过本地 Node.js 子进程运行，不访问网络、不调用模型。应保留上游 LICENSE、CPAL/AGPL 及作者署名；对外分发或服务化时按所选许可履行义务。
 
 `src/cnki_mcp/styles/` 包含从 [CSL Styles](https://github.com/citation-style-language/styles) 原样取得的两个独立样式，均保留原作者、样式标识、更新时间及许可声明：
 

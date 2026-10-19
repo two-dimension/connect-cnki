@@ -32,13 +32,17 @@ def extract_results(html: str, base_url: str, profile: Institution) -> list[Pape
         def value(selector, row=row):
             element = row.select_one(selector)
             return element.get_text(" ", strip=True) if element else None
+        author_cell = row.select_one(selectors.authors)
+        authors = [a.get_text(" ", strip=True) for a in author_cell.select("a")] if author_cell else []
+        if not authors:
+            authors = [x.strip() for x in re.split(r"[;；,，]+", value(selectors.authors) or "") if x.strip()]
         date = value(selectors.date)
         year_match = re.search(r"\b(19|20)\d{2}\b", date or "")
         dbcode = args.get("dbcode", [""])[0].upper()
         paper_type = {"CJFQ": "journal", "CJFD": "journal", "CDFD": "thesis", "CMFD": "thesis",
                       "CPFD": "conference"}.get(dbcode, "other")
         records.append(PaperInput(
-            title=link.get_text(" ", strip=True), authors=[x for x in re.split(r"[;；,，\s]+", value(selectors.authors) or "") if x],
+            title=link.get_text(" ", strip=True), authors=authors,
             source=value(selectors.source), year=int(year_match[0]) if year_match else None,
             source_provider="cnki", source_id=identity, detail_url=public_url(url), paper_type=paper_type,
         ))

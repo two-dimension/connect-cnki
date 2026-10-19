@@ -1,4 +1,5 @@
 import asyncio
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -25,7 +26,10 @@ async def test_real_browser_synthetic_search_pagination_and_identity(app):
     )
     app.settings.institutions.append(profile)
     async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(headless=True)
+        options = {"headless": True}
+        if os.environ.get("CNKI_TEST_BROWSER_CHANNEL"):
+            options["channel"] = os.environ["CNKI_TEST_BROWSER_CHANNEL"]
+        browser = await playwright.chromium.launch(**options)
         context = await browser.new_context()
 
         async def fulfill(route):
@@ -61,5 +65,9 @@ async def test_real_browser_synthetic_search_pagination_and_identity(app):
         mismatch = await app.verify_access_session(sid)
         assert mismatch["data"]["error_code"] == "INSTITUTION_MISMATCH"
         assert mismatch["data"]["state"] == "paused"
+        await page.evaluate("document.title = '安全验证'")
+        challenge = await app.verify_access_session(sid)
+        assert challenge["data"]["error_code"] == "USER_INTERACTION_REQUIRED"
+        assert challenge["data"]["state"] == "waiting_for_user"
         await browser.close()
         app.access.contexts.clear()

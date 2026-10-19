@@ -127,7 +127,10 @@ class Documents:
         manifest = self.store.root / "parses" / f"{parse_id}.json"
         manifest.write_text(json.dumps(artifact, ensure_ascii=False, indent=2), encoding="utf-8")
         return {"parse_artifact_id": parse_id, "asset_id": asset["id"], "sha256": asset["sha256"],
-                "quality": quality, "page_count": len(result["pages"]), "reading_level": "fulltext",
+                "quality": quality, "page_count": len(result["pages"]),
+                "reading_level": "fulltext" if any(e["text"].strip() for e in self.store.all("evidence")
+                                                     if e["parse_artifact_id"] == parse_id) else "metadata_only",
+                "_job_state": "partially_succeeded" if result["scanned_pages"] else "succeeded",
                 "limitations": ["页码为 PDF 页序号；印刷页码、表格、公式和阅读顺序尚未人工核验。"]}
 
     def span(self, evidence: dict):

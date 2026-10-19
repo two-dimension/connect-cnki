@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 from .config import Settings
@@ -22,9 +23,16 @@ def main():
                           "institutions": [p.institution_id for p in settings.institutions],
                           "client": settings.client.model_dump(), "transport": "stdio"}, ensure_ascii=False, indent=2))
         return
+    from .core import AppError
     from .server import create_server
 
-    create_server(settings).run(transport="stdio")
+    if settings.browser_channel == "chromium":
+        os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(settings.data_dir / "browsers"))
+    try:
+        create_server(settings).run(transport="stdio")
+    except AppError as error:
+        print(f"{error.code}: {error.message} {error.action}", file=sys.stderr)
+        raise SystemExit(2) from None
 
 
 if __name__ == "__main__":
