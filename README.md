@@ -57,7 +57,9 @@ uv run cnki-mcp --config config.local.json
 uv run cnki-mcp --config config.local.json --access-check xmu
 ```
 
-它打开可见专用窗口，等待用户亲自处理网站安全验证；在终端输入 `verify` 核验机构、`inspect` 查看脱敏诊断、`close` 结束。诊断使用独立数据子目录，不影响已运行 MCP 的任务，不提交文献检索或下载；只列出主机和预期学校名的结构候选，不输出完整 URL、登录 DOM、密码或身份断言。候选节点必须由维护者确认其机构组件含义，不能自动作为认证成功依据。CARSI 可使用 `--mode carsi`。
+它打开可见专用窗口，等待用户亲自处理网站安全验证；在终端输入 `verify` 核验机构、`inspect` 查看脱敏诊断、`reload` 重载本地配置、`reopen` 重开已配置入口、`close` 结束。`reload / reopen` 保留同一专用浏览器上下文，并要求重新核验机构；修改数据目录或浏览器类型仍需重启。诊断使用独立数据子目录，不影响已运行 MCP 的任务，不提交文献检索或下载；只列出主机和预期学校名的结构候选，不输出完整 URL、登录 DOM、密码或身份断言。候选节点必须由维护者确认其机构组件含义，不能自动作为认证成功依据。CARSI 可使用 `--mode carsi`。
+
+额外的静态资源主机使用 `resource_hosts` 单独配置，目前为实际页面请求的 `piccache.cnki.net`。它只允许脚本、样式、图片、字体和媒体子资源；页面导航、XHR 和 fetch 仍须符合 `allowed_hosts`。专用上下文禁用 service worker，避免缓存工作线程绕过路由检查。
 
 ## 无需在线接入的本地流程
 

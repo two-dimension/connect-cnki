@@ -42,14 +42,14 @@ class BrowserAccess:
                 if self.settings.browser_channel != "chromium":
                     options["channel"] = self.settings.browser_channel
                 self.browser = await self.playwright.chromium.launch(**options)
-            context = await self.browser.new_context(accept_downloads=True)
+            context = await self.browser.new_context(accept_downloads=True, service_workers="block")
             context.set_default_timeout(self.settings.network_timeout_ms)
             self.contexts[session["id"]] = context
             self.locks[session["id"]] = asyncio.Lock()
             self.blocked_hosts[session["id"]] = {"navigation": set(), "resources": set()}
 
             async def route_request(route):
-                await self.route_request(session["id"], profile, route)
+                await self.route_request(session["id"], self.settings.institution(institution_id), route)
 
             await context.route("**/*", route_request)
             page = await context.new_page()
@@ -76,7 +76,12 @@ class BrowserAccess:
                     body=f'<html><head><meta http-equiv="refresh" content="0;url={destination}"></head>'
                          '<body>正在返回知网…</body></html>')
                 return
-            validate_url(route.request.url, profile.allowed_hosts)
+            hosts = profile.allowed_hosts
+            if not route.request.is_navigation_request() and route.request.resource_type in {
+                "script", "stylesheet", "image", "font", "media",
+            }:
+                hosts = [*hosts, *profile.resource_hosts]
+            validate_url(route.request.url, hosts)
         except (AppError, ValueError):
             hostname = urlsplit(route.request.url).hostname
             category = "navigation" if route.request.is_navigation_request() else "resources"
@@ -88,6 +93,40 @@ class BrowserAccess:
             await route.abort()
             return
         await route.fallback()
+
+    async def reconfigure(self, session_id: str, settings: Settings) -> dict:
+        """Load a maintainer's validated local profile without replacing browser cookies."""
+        session = self.store.get(session_id, "session")
+        profile = settings.institution(session["institution_id"])
+        require(session["mode"] in profile.access_modes, "ACCESS_MODE_UNAVAILABLE", "新配置未启用当前认证模式。")
+        require(settings.data_dir.resolve() == self.settings.data_dir.resolve()
+                and settings.browser_channel == self.settings.browser_channel,
+                "CONFIG_RESTART_REQUIRED", "数据目录或浏览器类型变化需要重启诊断会话。")
+        async with self.locked(session_id):
+            self.settings = settings
+            self.store.put("session", {**session, "state": "waiting_for_user", "checked_at": None,
+                                        "institution_name": None, "error_code": None})
+            self.store.db.commit()
+        return {"session_id": session_id, "reloaded": True, "browser_context_preserved": True,
+                "institution_id": profile.institution_id, "rules_version": profile.rules_version}
+
+    async def reopen(self, session_id: str) -> dict:
+        """Explicitly reopen only the configured entry, retaining this dedicated context."""
+        session = self.store.get(session_id, "session")
+        profile = self.settings.institution(session["institution_id"])
+        entry = validate_url(profile.entry_urls[session["mode"]], profile.allowed_hosts)
+        async with self.locked(session_id) as context:
+            page = context.pages[0] if context.pages else await context.new_page()
+            self.blocked.discard(session_id)
+            self.blocked_hosts[session_id] = {"navigation": set(), "resources": set()}
+            self.store.put("session", {**session, "state": "waiting_for_user", "checked_at": None,
+                                        "institution_name": None, "error_code": None})
+            self.store.db.commit()
+            try:
+                await page.goto(entry, wait_until="domcontentloaded")
+            except Exception:
+                raise AppError("NETWORK_NOT_READY", "专用入口重新打开失败。", "检查网络或 inspect 中的脱敏主机状态。") from None
+        return {"session_id": session_id, "entry_reopened": True, "browser_context_preserved": True}
 
     async def inspect(self, session_id: str) -> dict:
         """Read only known provider labels and structural hints, never login DOM or URLs.

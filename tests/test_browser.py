@@ -102,6 +102,7 @@ async def test_real_browser_synthetic_search_pagination_and_identity(app):
 async def test_browser_upgrades_solved_challenge_return_without_http_egress(app):
     profile = Institution(institution_id="fixture", display_names=["Fixture"],
         allowed_hosts=["fixture.example"], provider_hosts=["fixture.example"],
+        access_modes=["institution_network"], entry_urls={"institution_network": "https://fixture.example/kns8s/"},
         search_url="https://fixture.example/kns8s/")
     received = []
     async with async_playwright() as playwright:
@@ -110,17 +111,36 @@ async def test_browser_upgrades_solved_challenge_return_without_http_egress(app)
             options["channel"] = os.environ["CNKI_TEST_BROWSER_CHANNEL"]
         browser = await playwright.chromium.launch(**options)
         context = await browser.new_context()
+        app.settings.institutions.append(profile)
+        with app.store.transaction():
+            app.store.put("session", {"id": "fixture_session", "institution_id": "fixture",
+                                      "mode": "institution_network", "state": "waiting_for_user"})
+        app.access.contexts["fixture_session"] = context
+        app.access.locks["fixture_session"] = asyncio.Lock()
+        await context.add_cookies([{"name": "fixture_session_cookie", "value": "TEST_ONLY", "url": "https://fixture.example"}])
 
         async def server_fixture(route):
             received.append(route.request.url)
             await route.fulfill(status=200, content_type="text/html", body="<p>Synthetic return completed</p>")
 
         await context.route("**/*", server_fixture)
-        await context.route("**/*", lambda route: app.access.route_request("fixture_session", profile, route))
+        await context.route("**/*", lambda route: app.access.route_request(
+            "fixture_session", app.access.settings.institution("fixture"), route))
         page = await context.new_page()
         await page.goto("http://fixture.example/kns8s/?captchaId=PRIVATE_TEST_NONCE&encoded=a%2Fb%3D", wait_until="domcontentloaded")
         await page.wait_for_url("https://fixture.example/**", wait_until="domcontentloaded")
         assert received == ["https://fixture.example/kns8s/?captchaId=PRIVATE_TEST_NONCE&encoded=a%2Fb%3D"]
         assert app.access.https_upgrades["fixture_session"] == 1
         assert "fixture_session" not in app.access.blocked
+        updated = app.settings.model_copy(deep=True)
+        updated.institutions[0].resource_hosts = ["static.fixture.example"]
+        reloaded = await app.access.reconfigure("fixture_session", updated)
+        assert reloaded["browser_context_preserved"]
+        assert app.access.contexts["fixture_session"] is context
+        assert any(cookie["value"] == "TEST_ONLY" for cookie in await context.cookies())
+        async with page.expect_response("https://static.fixture.example/image.png"):
+            await page.locator("body").evaluate(
+                "body => {const image = new Image(); image.src = 'https://static.fixture.example/image.png'; body.append(image)}")
+        assert received[-1] == "https://static.fixture.example/image.png"
         await browser.close()
+        app.access.contexts.clear()

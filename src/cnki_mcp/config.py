@@ -74,6 +74,7 @@ class Institution(StrictModel):
     search_url: str = ""
     allowed_hosts: list[str] = Field(default_factory=list)
     provider_hosts: list[str] = Field(default_factory=list)
+    resource_hosts: list[str] = Field(default_factory=list)
     selectors: Selectors = Field(default_factory=Selectors)
     policy_records: list[PolicyRecord] = Field(default_factory=list)
     subscriptions: list[str] = Field(default_factory=list)

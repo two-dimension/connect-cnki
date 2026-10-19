@@ -36,7 +36,8 @@ def main():
         if arguments.access_check:
             from .access_check import run_access_check
 
-            asyncio.run(run_access_check(settings, arguments.access_check, arguments.mode))
+            asyncio.run(run_access_check(settings, arguments.access_check, arguments.mode,
+                                         arguments.config or os.environ.get("CNKI_MCP_CONFIG")))
             return
         create_server(settings).run(transport="stdio")
     except AppError as error:

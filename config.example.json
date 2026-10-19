@@ -23,6 +23,7 @@
       "search_url": "https://kns.cnki.net/kns8s/",
       "allowed_hosts": ["kns.cnki.net", "www.cnki.net", "fsso.cnki.net", "idp.xmu.edu.cn"],
       "provider_hosts": ["kns.cnki.net", "www.cnki.net", "fsso.cnki.net"],
+      "resource_hosts": ["piccache.cnki.net"],
       "selectors": {
         "institution_label": ""
       },
