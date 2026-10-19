@@ -44,10 +44,26 @@ async def test_real_browser_synthetic_search_pagination_and_identity(app):
         app.access.contexts[sid] = context
         app.access.locks[sid] = asyncio.Lock()
         assert (await app.verify_access_session(sid))["data"]["state"] == "ready"
+        await page.locator("#txt_SearchText").fill("PRIVATE_SEARCH_FIELD_VALUE")
+        inspected = await app.get_access_status(sid, inspect_page=True)
+        widgets = inspected["data"]["browser_diagnostics"]["pages"][0]["search_widgets"]
+        assert any(widget["id"] == "txt_SearchText" for widget in widgets)
+        assert "PRIVATE_SEARCH_FIELD_VALUE" not in str(inspected)
+        pending = await context.new_page()
+        await pending.goto("https://fixture.example/")
+        await pending.evaluate("document.title = '安全验证'")
+        blocked = await app.verify_access_session(sid)
+        assert blocked["data"]["state"] == "waiting_for_user"
+        assert blocked["data"]["error_code"] == "USER_INTERACTION_REQUIRED"
+        await pending.close()
+        assert (await app.verify_access_session(sid))["data"]["state"] == "ready"
         project = (await app.create_project("fixture", "fixture"))["data"]["project_id"]
         query = SearchQuery(text="prediction")
         first = await app.search_papers(project, sid, query, limit=1)
         assert first["status"] == "succeeded", first
+        layout = await app.get_access_status(sid, inspect_page=True)
+        assert any(item.get("result_layout") for item in layout["data"]["browser_diagnostics"]["pages"])
+        assert "PRIVATE_TOKEN" not in str(layout)
         cursor = first["next_cursor"]
         assert "PRIVATE_TOKEN" not in str(first)
         second = await app.search_papers(project, sid, query, cursor=cursor, limit=1)

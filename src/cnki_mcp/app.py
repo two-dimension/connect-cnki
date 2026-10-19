@@ -219,8 +219,8 @@ class Application:
         return await self.access.close(session_id, clear_persisted)
 
     @endpoint
-    async def get_access_status(self, session_id: ID, operation: str | None = None) -> dict:
-        """读取会话与操作许可；状态查询不触发网络或隐式认证。"""
+    async def get_access_status(self, session_id: ID, operation: str | None = None, inspect_page: bool = False) -> dict:
+        """读取会话与操作许可；可显式读取专用页的脱敏诊断，不触发网络或认证。"""
         session = self.store.get(session_id, "session")
         profile = self.settings.institution(session["institution_id"])
         permission = "not_requested"
@@ -230,8 +230,11 @@ class Application:
                 permission = "allowed"
             except AppError as error:
                 permission = error.code
-        return {"session": session, "operation": operation, "permission": permission,
-                "subscriptions": profile.subscriptions, "usage_purpose": self.settings.usage_purpose, "checked_live": False}
+        result = {"session": session, "operation": operation, "permission": permission,
+                  "subscriptions": profile.subscriptions, "usage_purpose": self.settings.usage_purpose, "checked_live": False}
+        if inspect_page:
+            result["browser_diagnostics"] = await self.access.inspect(session_id)
+        return result
 
     @endpoint
     async def search_papers(self, project_id: ID, session_id: ID, query: SearchQuery,

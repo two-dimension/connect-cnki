@@ -3,12 +3,12 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from urllib.parse import parse_qs, urljoin, urlsplit
+from urllib.parse import parse_qs, urlencode, urljoin, urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup
 
 from .access import BrowserAccess
-from .config import Institution, Settings, public_url, validate_url
+from .config import Institution, Settings, public_url, re_safe, validate_url
 from .core import AppError, require
 from .models import PaperInput, SearchFilters, SearchQuery
 from .policy import PolicyGate
@@ -27,8 +27,26 @@ def extract_results(html: str, base_url: str, profile: Institution, record_limit
         url = urljoin(base_url, link["href"])
         validate_url(url, profile.provider_hosts)
         args = {k.lower(): v for k, v in parse_qs(urlsplit(url).query).items()}
-        identity = ":".join([args.get("dbcode", [""])[0], args.get("filename", [""])[0]])
-        require(identity.strip(":"), "SOURCE_LAYOUT_CHANGED", "结果缺少稳定来源标识。")
+        filename, dbcode, dbname = (args.get(key, [""])[0] for key in ("filename", "dbcode", "dbname"))
+        if not filename:
+            # Current KNS links contain an opaque v parameter. Stable bibliographic
+            # identifiers are exposed on the row's collect control instead.
+            marker = row.select_one("[data-dbname][data-filename]")
+            if marker:
+                filename, dbname = marker.get("data-filename", ""), marker.get("data-dbname", "")
+                resource = str(marker.get("data-resource", "")).upper()
+                for candidate in (resource, dbname.upper()):
+                    match = re.match(r"^(CJFQ|CJFD|CAPJ|CDFD|CMFD|CPFD|CCND)", candidate)
+                    if match:
+                        dbcode = match[1]
+                        break
+        require(filename and (dbcode or dbname) and all(re_safe(value) for value in (filename, dbcode or dbname)),
+                "SOURCE_LAYOUT_CHANGED", "结果缺少可核验的稳定来源标识。")
+        require(not dbname or re_safe(dbname), "SOURCE_LAYOUT_CHANGED", "结果数据库标识格式未知。")
+        identity = f"{dbcode or dbname}:{filename}"
+        target = urlsplit(url)
+        stable_args = {key: value for key, value in (("dbcode", dbcode), ("dbname", dbname), ("filename", filename)) if value}
+        detail_url = urlunsplit((target.scheme, target.netloc, target.path, urlencode(stable_args), ""))
         def value(selector, row=row):
             element = row.select_one(selector)
             return element.get_text(" ", strip=True) if element else None
@@ -38,13 +56,13 @@ def extract_results(html: str, base_url: str, profile: Institution, record_limit
             authors = [x.strip() for x in re.split(r"[;；,，]+", value(selectors.authors) or "") if x.strip()]
         date = value(selectors.date)
         year_match = re.search(r"\b(19|20)\d{2}\b", date or "")
-        dbcode = args.get("dbcode", [""])[0].upper()
+        dbcode = dbcode.upper()
         paper_type = {"CJFQ": "journal", "CJFD": "journal", "CDFD": "thesis", "CMFD": "thesis",
-                      "CPFD": "conference"}.get(dbcode, "other")
+                      "CAPJ": "journal", "CPFD": "conference"}.get(dbcode, "other")
         records.append(PaperInput(
             title=link.get_text(" ", strip=True), authors=authors,
             source=value(selectors.source), year=int(year_match[0]) if year_match else None,
-            source_provider="cnki", source_id=identity, detail_url=public_url(url), paper_type=paper_type,
+            source_provider="cnki", source_id=identity, detail_url=public_url(detail_url), paper_type=paper_type,
         ))
     return records
 
@@ -75,7 +93,7 @@ class CNKIProvider:
         text = await page.locator("body").inner_text()
         if any(word in text for word in ("访问过于频繁", "访问频繁", "操作频繁")):
             raise AppError("PROVIDER_RATE_LIMITED", "来源提示访问频繁，已暂停。", "按来源提示等待后重新验证。")
-        if any(word in text for word in ("请输入验证码", "安全验证", "拖动滑块")):
+        if "安全验证" in await page.title() or any(word in text for word in ("请输入验证码", "安全验证", "拖动滑块")):
             raise AppError("USER_INTERACTION_REQUIRED", "来源需要验证码或安全验证。", "请在浏览器中亲自操作。")
 
     async def goto(self, page, url: str, profile: Institution):
@@ -117,23 +135,29 @@ class CNKIProvider:
             self.access.query_pages[query_id] = page
             await self.goto(page, profile.search_url, profile)
             await self.guard_page(page, profile, session_id)
-            if query.field != "subject":
-                await page.locator(selectors.search_fields[query.field]).click()
-            for key, value in controls.items():
-                control = page.locator(selectors.filter_controls[key])
-                await control.fill(str(value) if not isinstance(value, list) else ";".join(value))
-            await page.locator(selectors.search_input).fill(query.text)
-            await page.locator(selectors.search_button).click()
-            await page.wait_for_load_state("domcontentloaded")
-            if sort != "relevance":
-                await page.locator(selectors.sort_controls[sort]).click()
+            from playwright.async_api import TimeoutError
+
+            try:
+                if query.field != "subject":
+                    await page.locator(selectors.search_fields[query.field]).click()
+                for key, value in controls.items():
+                    control = page.locator(selectors.filter_controls[key])
+                    await control.fill(str(value) if not isinstance(value, list) else ";".join(value))
+                await page.locator(selectors.search_input).fill(query.text)
+                await page.locator(selectors.search_button).click()
+                await page.wait_for_load_state("domcontentloaded")
+                if sort != "relevance":
+                    await page.locator(selectors.sort_controls[sort]).click()
+            except TimeoutError:
+                await self.guard_page(page, profile, session_id)
+                raise AppError("SOURCE_LAYOUT_CHANGED", "检索控件未按预期出现或完成操作，请更新入口适配。") from None
         else:
             page = self.access.query_pages.get(query_id)
             require(page and not page.is_closed(), "CURSOR_EXPIRED", "浏览器检索快照已丢失，请重新检索。")
             await self.guard_page(page, profile, session_id)
             previous = await page.locator(selectors.result_rows).all_text_contents()
-            await page.locator(selectors.next_page).click()
             try:
+                await page.locator(selectors.next_page).click()
                 await page.wait_for_function(
                     """({selector, old}) => JSON.stringify(Array.from(document.querySelectorAll(selector),
                     row => row.textContent)) !== JSON.stringify(old)""",

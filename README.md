@@ -59,6 +59,14 @@ uv run cnki-mcp --config config.local.json --access-check xmu
 
 它打开可见专用窗口，等待用户亲自处理网站安全验证；在终端输入 `verify` 核验机构、`inspect` 查看脱敏诊断、`reload` 重载本地配置、`reopen` 重开已配置入口、`close` 结束。`reload / reopen` 保留同一专用浏览器上下文，并要求重新核验机构；修改数据目录或浏览器类型仍需重启。诊断使用独立数据子目录，不影响已运行 MCP 的任务，不提交文献检索或下载；只列出主机和预期学校名的结构候选，不输出完整 URL、登录 DOM、密码或身份断言。候选节点必须由维护者确认其机构组件含义，不能自动作为认证成功依据。CARSI 可使用 `--mode carsi`。
 
+真实 MCP 检索联调可运行：
+
+```powershell
+uv run python scripts/pilot_mcp.py --query 大语言模型 --limit 3 --budget 20
+```
+
+此入口使用官方 MCP 客户端启动 stdio 服务并保留同一会话。输入 `verify` 核验，`search` 提交检索，`next` 继续游标，`inspect` 查看脱敏布局诊断，`close` 正常关闭。出现安全验证时在同一窗口亲自完成后再核验；可传 `--project-id` 复用已有联调项目。MCP 本身也支持 `get_access_status(inspect_page=true)`，默认状态查询仍不读取页面。
+
 额外的静态资源主机使用 `resource_hosts` 单独配置，目前包含实际页面请求的 `piccache.cnki.net` 及官网加载的腾讯验证 SDK 主机。它只允许脚本、样式、图片、字体和媒体子资源；页面导航、XHR 和 fetch 仍须符合 `allowed_hosts`。官网的机构组件由 `login.cnki.net` 提供，作为精确认证主机单独放行。专用上下文禁用 service worker，避免缓存工作线程绕过路由检查。
 
 ## 无需在线接入的本地流程

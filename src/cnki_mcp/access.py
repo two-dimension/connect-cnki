@@ -4,7 +4,7 @@ import asyncio
 import html
 import re
 from contextlib import asynccontextmanager
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 from .config import Institution, Settings, provider_https_upgrade, validate_url
 from .core import AppError, Store, now, require
@@ -53,15 +53,28 @@ class BrowserAccess:
 
             await context.route("**/*", route_request)
             page = await context.new_page()
-            await page.goto(profile.entry_urls[mode], wait_until="domcontentloaded")
         except Exception:
             if session["id"] in self.contexts:
                 await self.contexts.pop(session["id"]).close()
             self.store.put("session", {**session, "state": "paused", "error_code": "BROWSER_SESSION_UNAVAILABLE"})
             self.store.db.commit()
-            raise AppError("BROWSER_SESSION_UNAVAILABLE", "专用浏览器启动或入口访问失败。",
-                           "检查网络，或运行 uv run playwright install chromium 后重建会话。") from None
-        return {**session, "user_action": "请在专用浏览器亲自完成认证，再调用 verify_access_session。"}
+            raise AppError("BROWSER_SESSION_UNAVAILABLE", "专用浏览器启动失败。",
+                           "检查已配置浏览器是否可启动，或选择已安装的浏览器类型。") from None
+        action = "请在专用浏览器亲自完成认证，再调用 verify_access_session。"
+        try:
+            # Opening a session must not wait for all third-party header scripts.
+            # The subsequent explicit verification checks the rendered institution.
+            response = await page.goto(profile.entry_urls[mode], wait_until="commit")
+            if response and response.status >= 400:
+                session.update(state="waiting_for_user", error_code="PROVIDER_UNAVAILABLE")
+                action = "来源入口返回错误；浏览器已保留，请检查页面后重新核验。"
+        except Exception:
+            session.update(state="paused" if session["id"] in self.blocked else "waiting_for_user",
+                           error_code="HOST_NOT_ALLOWED" if session["id"] in self.blocked else "NETWORK_NOT_READY")
+            action = "入口尚未就绪；专用浏览器已保留，请检查网络和页面后重新核验。"
+        self.store.put("session", session)
+        self.store.db.commit()
+        return {**session, "user_action": action}
 
     async def route_request(self, session_id: str, profile: Institution, route):
         try:
@@ -163,6 +176,55 @@ class BrowserAccess:
                     pages.append(item)
                     continue
                 item["kind"] = "provider"
+                item["path"] = url.path[:180]
+                configured_search = urlsplit(profile.search_url)
+                search_base = configured_search.path.rstrip("/")
+                if url.hostname == configured_search.hostname and (
+                    url.path.rstrip("/") == search_base or url.path.startswith(search_base + "/")
+                ):
+                    # Public search controls only: never field values, login DOM or page HTML.
+                    widgets = page.locator('input[type="text"]:visible, input:not([type]):visible, '
+                                           'button:visible, select:visible, ' + profile.selectors.search_button)
+                    item["search_widgets"] = []
+                    for index in range(min(await widgets.count(), 24)):
+                        widget = widgets.nth(index)
+                        if not await widget.is_visible():
+                            continue
+                        structure = await widget.evaluate("""element => ({
+                            tag: element.tagName.toLowerCase(), id: element.id,
+                            classes: typeof element.className === 'string' ? element.className : '',
+                            label: element.tagName === 'INPUT' ? (element.getAttribute('placeholder') || '')
+                                   : (element.innerText || '').slice(0,160)
+                        })""")
+                        if re.search(r"saml|cookie|token|password|session|secret|captcha", structure["id"], re.I):
+                            continue
+                        item["search_widgets"].append(structure)
+                    item["result_layout"] = []
+                    rows = page.locator(profile.selectors.result_rows)
+                    for index in range(min(await rows.count(), 3)):
+                        row = rows.nth(index)
+                        shape = await row.evaluate("""element => ({
+                            attribute_names: Array.from(element.attributes, attr => attr.name),
+                            cells: Array.from(element.querySelectorAll('td'), cell => ({classes: cell.className})),
+                            links: Array.from(element.querySelectorAll('a'), link => ({
+                                id: link.id, classes: link.className, href: link.href,
+                                attribute_names: Array.from(link.attributes, attr => attr.name),
+                                source_fields: Object.fromEntries(['data-dbname','data-filename','data-resource']
+                                    .filter(name => link.hasAttribute(name)).map(name => [name, link.getAttribute(name)]))
+                            })).slice(0,8),
+                            checkboxes: Array.from(element.querySelectorAll('input[type=checkbox]'), input => ({
+                                name: input.name, value: input.value
+                            }))
+                        })""")
+                        for link in shape["links"]:
+                            link["source_fields"] = {key: value for key, value in link["source_fields"].items()
+                                                     if re.fullmatch(r"[A-Za-z0-9_.-]{1,150}", value)}
+                            target = urlsplit(link.pop("href"))
+                            link["target_shape"] = {"host": target.hostname, "path": target.path,
+                                                    "query_keys": [key for key, _ in parse_qsl(target.query)]}
+                        shape["checkboxes"] = [checkbox for checkbox in shape["checkboxes"]
+                            if re.fullmatch(r"[A-Za-z0-9_.!;:-]{1,200}", checkbox["value"]) and "!" in checkbox["value"]]
+                        item["result_layout"].append(shape)
                 for name in profile.display_names:
                     matches = page.get_by_text(name, exact=True)
                     for index in range(min(await matches.count(), 5)):
@@ -215,24 +277,29 @@ class BrowserAccess:
         elif session_id in self.blocked:
             state, code = "paused", "HOST_NOT_ALLOWED"
         else:
+            pending_interaction = False
             for page in context.pages:
                 # Never inspect IdP pages, callbacks, school login DOM, inputs or assertions.
                 if urlsplit(page.url).hostname not in profile.provider_hosts:
                     continue
                 if any(x in urlsplit(page.url).path.casefold() for x in ("login", "saml", "callback", "auth")):
+                    pending_interaction = True
                     continue
                 if await page.locator('input[type="password"]:visible').count():
+                    pending_interaction = True
                     continue
                 safety = page.get_by_text("安全验证", exact=True)
                 if "安全验证" in await page.title() or (
                     await safety.count() and await safety.first.is_visible()
                 ):
                     code = "USER_INTERACTION_REQUIRED"
-                    continue
+                    pending_interaction = True
+                    break
                 challenge = page.locator('input[name*="captcha"], input[id*="captcha"], .verify-code')
                 if await challenge.count() and await challenge.first.is_visible():
                     code = "USER_INTERACTION_REQUIRED"
-                    continue
+                    pending_interaction = True
+                    break
                 if not profile.selectors.institution_label:
                     code = "INSTITUTION_UNVERIFIED"
                     continue
@@ -247,11 +314,15 @@ class BrowserAccess:
                     continue
                 label = (await visible.inner_text()).strip()
                 if label in profile.display_names:
-                    detected, state, code = label, "ready", None
-                    break
+                    detected = label
+                    continue
                 if label:
                     state, code = "paused", "INSTITUTION_MISMATCH"
                     break
+            if detected and not pending_interaction and state != "paused":
+                state, code = "ready", None
+            else:
+                detected = None
         if state == "waiting_for_user" and session["state"] == "ready" and code != "USER_INTERACTION_REQUIRED":
             state, code = "expired", "SESSION_EXPIRED"
         result = {**session, "state": state, "checked_at": now(), "institution_name": detected,

@@ -25,7 +25,9 @@
       "provider_hosts": ["kns.cnki.net", "www.cnki.net", "fsso.cnki.net"],
       "resource_hosts": ["piccache.cnki.net", "turing.captcha.qcloud.com", "turing.captcha.gtimg.com"],
       "selectors": {
-        "institution_label": ".ecp_header_unitName"
+        "institution_label": ".ecp_header_unitName",
+        "search_input": "#txt_search",
+        "search_button": "input.search-btn"
       },
       "subscriptions": [],
       "verified_at": "2026-10-19T04:18:27+00:00",
