@@ -33,7 +33,7 @@ class ReviewWriting:
     def save_synthesis(self, project_id: str, snapshot_id: str, synthesis: SynthesisInput, **revision):
         self.workspace.project(project_id, writing=True)
         snapshot = self.workspace.corpus(project_id, snapshot_id)
-        dependencies, rights, _ = self.dependencies(project_id, snapshot, synthesis.plan_id, synthesis.card_ids)
+        dependencies, rights, records = self.dependencies(project_id, snapshot, synthesis.plan_id, synthesis.card_ids)
         previous = self.workspace.get(project_id, revision["entity_id"], "synthesis") if revision.get("entity_id") else None
         previous_claims = {c["claim_id"]: c for c in previous["content"]["claims"]} if previous else {}
         previous_themes = {t["theme_id"] for t in previous["content"]["themes"]} if previous else set()
@@ -77,6 +77,8 @@ class ReviewWriting:
         # Narrative comparisons inherit the corpus too, including unlinked/contrary source material.
         rights.extend(self.corpus_rights(snapshot))
         record = self.workspace.revision(project_id, "synthesis", {**synthesis.model_dump(), "snapshot_id": snapshot["id"],
+            "plan_id": next((r["id"] for r in records if r["kind"] == "review_plan"), None),
+            "card_ids": [r["id"] for r in records if r["kind"] == "paper_card"],
             "claims": claims, "themes": themes, "writing_rules_version": WRITING_VERSION},
             dependencies=dependencies, rights=rights, **revision)
         return self.workspace.present(record)
@@ -146,6 +148,9 @@ class ReviewWriting:
             "language_pass_requires_fact_recheck": bool(previous and section.editing_pass == "language"
                                                        and previous["content"]["body"] != body)}
         record = self.workspace.revision(project_id, "review_section", {**section.model_dump(), "snapshot_id": snapshot["id"],
+            "plan_id": next((r["id"] for r in records if r["kind"] == "review_plan"), None),
+            "card_ids": [r["id"] for r in records if r["kind"] == "paper_card"],
+            "synthesis_ids": [r["id"] for r in records if r["kind"] == "synthesis"],
             "body": body, "paragraphs": saved, "sentence_inventory": inventory, "claims": list(claims.values()),
             "validation": validation, "fact_signature": signature, "writing_rules_version": WRITING_VERSION,
             "writing_rules": WRITING_RULES}, dependencies=dependencies, rights=[*rights, *self.corpus_rights(snapshot)], **revision)

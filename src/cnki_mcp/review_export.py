@@ -52,8 +52,24 @@ class ReviewExporter:
                         section_revision_ids=[s["id"] for s in sections], support_status="not_certified")
         artifacts = [self.workspace.present(r) for kind in sorted(ARTIFACT_KINDS)
                      for r in self.workspace.records(project_id, kind)]
+        pending, visited, cards = [s["id"] for s in sections], set(), {}
+        while pending:
+            record_id = pending.pop()
+            if record_id in visited:
+                continue
+            visited.add(record_id)
+            record = self.store.get(record_id)
+            if record.get("kind") == "paper_card":
+                cards[record_id] = record
+            pending.extend(record.get("dependencies", []))
+        if not sections:
+            cards = {c["id"]: c for c in self.workspace.heads(project_id, "paper_card")}
+        matrix = [{"version_id": c["content"]["version_id"], "card_revision_id": c["id"],
+                   "snapshot_id": c["content"]["snapshot_id"], "reading_level": c["content"]["reading_level"],
+                   "analysis": self.workspace.protect_content(c, c["content"])} for c in cards.values()]
         return {"document": document, "formatted_bibliography": rendered["text"], "review_manifest": manifest,
-                "review_artifacts": artifacts, "review_issues": issues, "quality_acceptance": "pending_human_topic_pilot"}
+                "paper_matrix": matrix, "review_artifacts": artifacts, "review_issues": issues,
+                "quality_acceptance": "pending_human_topic_pilot"}
 
     def write(self, package, format):
         clean = self.workspace.gate.output(package)

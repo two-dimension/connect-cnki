@@ -154,3 +154,19 @@ async def test_revision_history_survives_reopening_store(app, paper, rights):
         await reopened.shutdown()
     # Fixture finalizer can safely shut down an already closed store.
     app.store.close = lambda: None
+
+
+async def test_quotation_across_contiguous_context_blocks_but_not_across_gaps(app, paper, rights):
+    project, version, snapshot, _, _ = await workspace(app, paper, rights)
+    span = next(e for e in app.store.all("evidence") if e["pdf_page"] == 1)
+    app.store.put("evidence", {**span, "offset": 0, "text": "A" * 1200})
+    app.store.put("evidence", {**span, "id": "evidence_adjacent", "offset": 1000, "text": "A" * 200 + "B" * 1000})
+    ref = EvidenceReference(version_id=version, evidence_ids=[span["id"], "evidence_adjacent"], quotation="A" * 400 + "B" * 200)
+    card = PaperCardInput(version_id=version, fields=[CardField(name="context", value="Contiguous source context", references=[ref])])
+    saved = await app.save_paper_card(project, snapshot, card)
+    assert saved["status"] == "succeeded", saved
+    app.store.put("evidence", {**span, "id": "evidence_gap", "offset": 3000, "text": "C" * 1000})
+    card.fields[0].references = [EvidenceReference(version_id=version,
+        evidence_ids=["evidence_adjacent", "evidence_gap"], quotation="B" * 100 + "C" * 100)]
+    invalid = await app.save_paper_card(project, snapshot, card, saved["data"]["entity_id"], saved["data"]["id"])
+    assert invalid["error"]["code"] == "QUOTATION_NOT_FOUND"

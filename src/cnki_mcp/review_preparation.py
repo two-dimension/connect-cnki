@@ -82,7 +82,8 @@ class ReviewPreparation:
             "_observation_ids": sorted(set(observation_ids))}
 
     def record_delivery(self, job):
-        if job["operation"] not in {"prepare_review_v2", "prepare_synthesis"} or not job.get("result") or job.get("reading_delivered"):
+        policy_fingerprint = digest(self.settings.model_dump(mode="json"))
+        if job["operation"] not in {"prepare_review_v2", "prepare_synthesis"} or not job.get("result") or job.get("reading_delivery_policy") == policy_fingerprint:
             return
         if not self.workspace.project(job["arguments"]["project_id"]).get("review_assistance_enabled", False):
             return
@@ -96,4 +97,4 @@ class ReviewPreparation:
                 self.workspace.revision(job["arguments"]["project_id"], "reading_progress", {
                     "snapshot_id": snapshot["id"], "observation_id": observation_id, "version_id": item["version_id"],
                     "meaning": "returned_to_client_not_understanding"}, dependencies=[snapshot["id"], observation_id])
-        self.store.put("job", {**job, "reading_delivered": True})
+        self.store.put("job", {**job, "reading_delivery_policy": policy_fingerprint})

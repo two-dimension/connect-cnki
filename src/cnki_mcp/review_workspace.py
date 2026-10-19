@@ -113,7 +113,12 @@ class ReviewWorkspace:
                 return True
             if record_id not in seen:
                 seen.add(record_id)
-                pending.extend(self.store.get(record_id).get("dependencies", []))
+                dependency = self.store.get(record_id)
+                if dependency.get("kind") == "corpus_snapshot" and any(
+                        self.store.get(i["version_id"], "version")["work_id"] != i["work_id"]
+                        for i in dependency["content"]["items"]):
+                    return True
+                pending.extend(dependency.get("dependencies", []))
         return False
 
     def requirements(self, record):
@@ -232,7 +237,9 @@ class ReviewWorkspace:
                 rights.append(item["metadata_rights"])
                 dependencies.append(reference.observation_id)
             require(spans or observation, "MISSING_EVIDENCE", "字段或论断需提供实际证据或题录观测。")
-            texts = [s["text"] for s in spans] + ([observation["fields"].get("abstract") or ""] if observation else [])
+            # Match quotes across contiguous blocks, never across a missing range or a page boundary.
+            from .review_evidence import ReviewEvidence
+            texts = [s["text"] for s in ReviewEvidence.merged(spans)] + ([observation["fields"].get("abstract") or ""] if observation else [])
             require(not reference.quotation or any(reference.quotation in t for t in texts),
                     "QUOTATION_NOT_FOUND", "原文引语未出现在绑定证据中。")
             resolved.append({**reference.model_dump(), "asset_id": item["asset_id"] if spans else None,

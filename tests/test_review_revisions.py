@@ -73,6 +73,11 @@ async def test_new_research_only_reports_coverage_and_old_snapshot_replays(app, 
     assert (await app.read_paper(version, project_id=project, snapshot_id=snapshot))["data"]["snapshot_id"] == snapshot
     assert (await app.get_review_artifact(project, section["id"]))["data"]["artifact"]["current_dependency_status"] == "unchanged"
     assert (await app.search_evidence(project, "Opposing", snapshot_id=snapshot, version_ids=[newer]))["error"]["code"] == "PROJECT_MISMATCH"
+    # The library's merge/rollback changes work mappings without changing citation identities.
+    app.store.put("version", {**app.store.get(version), "work_id": app.store.get(newer)["work_id"]})
+    changed = (await app.get_review_impact(project))["data"]
+    assert changed["work_relation_changed_version_ids"] == [version]
+    assert (await app.get_review_artifact(project, section["id"]))["data"]["artifact"]["current_dependency_status"] == "outdated"
 
 
 async def test_default_export_no_review_then_explicit_export_while_disabled(app, paper, rights):
@@ -186,3 +191,25 @@ async def test_shutdown_keeps_review_checkpoint_and_restarts_without_auto_resume
         assert [r["version_id"] for r in done["result"]["matrix"]] == [version, second]
     finally:
         await reopened.shutdown()
+
+
+async def test_checks_submitted_after_dependency_change_remain_outdated(app, paper, rights):
+    project, _, _, _, section, _ = await written_section(app, paper, rights)
+    plan = app.review_workspace.heads(project, "review_plan")[0]
+    await app.save_review_plan(project, ReviewPlanInput(goal="New inclusion criteria"), plan["entity_id"], plan["id"])
+    check = (await app.save_review_check(project, section["id"], ReviewCheckInput()))["data"]
+    assert check["current_dependency_status"] == "outdated"
+    progress = (await app.get_review_progress(project))["data"]
+    assert check["id"] not in progress["sections"][0]["check_ids"]
+
+
+async def test_job_reading_progress_uses_current_output_policy(app, paper, rights):
+    project, _, snapshot, _, _ = await workspace(app, paper, rights)
+    job = await app.prepare_synthesis(project, snapshot, "prediction")
+    await app.jobs.tasks[job["job_id"]]
+    app.settings.client.allowed_content.remove("fulltext")
+    await app.get_job(job["job_id"])
+    assert not any(r["content"].get("ranges") for r in app.review_workspace.heads(project, "reading_progress"))
+    app.settings.client.allowed_content.append("fulltext")
+    await app.get_job(job["job_id"])
+    assert any(r["content"].get("ranges") for r in app.review_workspace.heads(project, "reading_progress"))

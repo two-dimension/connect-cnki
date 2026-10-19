@@ -30,11 +30,12 @@ async def written_section(app, paper, rights):
     saved = result["data"]
     claim = saved["content"]["value"]["claims"][0]
     body = f"{claim['text']} [{version}]\n\nEvery study has solved this problem."
-    section = ReviewSectionInput(title="Prediction", question="Which conditions?", synthesis_ids=[saved["id"]],
+    section = ReviewSectionInput(title="Prediction", question="Which conditions?", synthesis_ids=[saved["entity_id"]],
         paragraphs=[ParagraphInput(text=f"{claim['text']} [{version}]", claim_ids=[claim["claim_id"]]),
                     ParagraphInput(text="Every study has solved this problem.")])
     result = await app.save_review(project, body, snapshot_id=snapshot, section=section)
     assert result["status"] == "succeeded", result
+    assert result["data"]["content"]["value"]["synthesis_ids"] == [saved["id"]]
     return project, version, snapshot, saved, result["data"], reference
 
 
