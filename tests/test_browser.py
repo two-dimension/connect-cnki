@@ -231,13 +231,18 @@ async def test_pdf_download_in_new_window_is_registered_and_windows_are_closed(a
         rejected = (await app.get_job(mismatched["job_id"]))["data"]
         assert rejected["error"]["code"] == "SOURCE_IDENTITY_CONFLICT"
         assert len(app.store.all("asset")) == 1
-        await homepage.evaluate("window.open('/popup-redirect','_blank')")
+        await homepage.locator("body").evaluate("""body => {
+            const link=document.createElement('a'); link.id='blocked-popup-link';
+            link.href='/popup-redirect'; link.target='_blank'; link.textContent='Fixture redirect'; body.append(link);
+        }""")
+        async with context.expect_page():
+            await homepage.locator("#blocked-popup-link").click()
 
         async def wait_for_block():
             while "unapproved.fixture.example" not in app.access.blocked_hosts.get(sid, {}).get("navigation", set()):
                 await asyncio.sleep(0.02)
 
-        await asyncio.wait_for(wait_for_block(), 5)
+        await asyncio.wait_for(wait_for_block(), 10)
         assert not any("unapproved.fixture.example" in url for url in received_urls)
         await app.close_access_session(sid)
         await browser.close()

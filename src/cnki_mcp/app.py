@@ -416,20 +416,26 @@ class Application:
         self.gate.check(project["institution_id"], "fulltext_download", paper["paper_type"])
         rights = {"origin": "institution", "institution_id": project["institution_id"], "resource_type": paper["paper_type"]}
         for asset in self.store.all("asset"):
-            if asset["version_id"] == paper["id"] and asset["rights"] == rights and asset["validation"] == "pdf_structural":
+            if asset["version_id"] == paper["id"] and asset["rights"] == rights and asset["validation"] in {
+                "pdf_structural", "pdf_structural_review_required",
+            }:
                 cached_file = self.store.root / asset["relative_path"]
                 if cached_file.is_file():
                     with cached_file.open("rb") as stream:
                         require(hashlib.file_digest(stream, "sha256").hexdigest() == asset["sha256"],
                                 "ASSET_INTEGRITY_FAILED", "缓存文件已被修改，请核验原始文件。")
-                    return self.documents.present_asset(asset)
+                    result = self.documents.present_asset(asset)
+                    if asset["validation"] == "pdf_structural_review_required":
+                        result["_job_state"] = "partially_succeeded"
+                    return result
         temporary = self.store.root / "tmp" / f"{job['id']}.download"
         try:
             async with self.online(arguments["session_id"], project) as (context, profile):
                 await self.provider.download(context, profile, arguments["session_id"], paper, temporary)
                 asset = self.documents.register(paper["id"], temporary, rights, "cnki_download")
                 self.store.db.commit()
-                return asset
+                return {**asset, **({"_job_state": "partially_succeeded"}
+                                   if asset["validation"] == "pdf_structural_review_required" else {})}
         except AppError as error:
             if error.code == "FILE_VALIDATION_FAILED" and temporary.is_file():
                 rejected = self.store.root / "rejected_downloads"
@@ -500,7 +506,8 @@ class Application:
         return {"version_id": version_id, "asset_id": artifact["asset_id"], "sha256": artifact["sha256"],
                 "parse_artifact_id": artifact["id"], "quality": artifact["quality"], "evidence": selected,
                 "truncated": len(selected) < len(spans), "reading_level": "fulltext" if selected else "metadata_only",
-                "needs_ocr_or_manual_review": bool(set(pages).intersection(artifact["scanned_pages"]))}
+                "needs_ocr_or_manual_review": bool(set(pages).intersection(artifact["scanned_pages"]))
+                                              or artifact["quality"] in {"structure_review_required", "layout_review_required"}}
 
     @endpoint
     async def search_evidence(self, project_id: ID, query: Annotated[str, Field(min_length=1, max_length=500)],

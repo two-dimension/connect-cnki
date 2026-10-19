@@ -5,15 +5,11 @@ import json
 import sys
 from pathlib import Path
 
-from pypdf import PdfReader
+from .pdf_validation import inspect_pdf
 
 
 def parse(source: Path, destination: Path, max_pages: int):
-    reader = PdfReader(source, strict=True)
-    if reader.is_encrypted:
-        raise ValueError("encrypted")
-    if not 0 < len(reader.pages) <= max_pages:
-        raise ValueError("page_limit")
+    reader, _, validation, structure_warnings = inspect_pdf(source, max_pages)
     pages, scanned, complex_pages = [], [], []
     for index, page in enumerate(reader.pages, 1):
         text = page.extract_text(extraction_mode="plain") or ""
@@ -25,7 +21,8 @@ def parse(source: Path, destination: Path, max_pages: int):
         pages.append({"pdf_page": index, "printed_page": None, "text": text,
                       "section": None, "bbox": None})
     destination.write_text(json.dumps({"pages": pages, "scanned_pages": scanned,
-                                       "complex_pages": complex_pages}, ensure_ascii=False), encoding="utf-8")
+                                       "complex_pages": complex_pages, "pdf_validation": validation,
+                                       "pdf_structure_warning_count": structure_warnings}, ensure_ascii=False), encoding="utf-8")
 
 
 if __name__ == "__main__":

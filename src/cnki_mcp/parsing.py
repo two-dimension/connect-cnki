@@ -7,11 +7,11 @@ import shutil
 import sys
 from pathlib import Path
 
-from pypdf import PdfReader
 from pypdf import __version__ as pypdf_version
 
 from .config import Settings
 from .core import AppError, Store, now, require, uid
+from .pdf_validation import inspect_pdf
 from .policy import PolicyGate, protected
 
 
@@ -29,14 +29,11 @@ class Documents:
         kind = "pdf" if signature.startswith(b"%PDF-") else "caj" if signature.startswith(b"CAJ") else None
         require(kind, "FILE_VALIDATION_FAILED", "仅接收具有正确文件签名的 PDF 或 CAJ。")
         pages = None
+        validation = "signature_only_manual_review"
+        pdf_warnings = 0
         if kind == "pdf":
             try:
-                reader = PdfReader(file, strict=True)
-                require(not reader.is_encrypted, "FILE_VALIDATION_FAILED", "加密 PDF 需先由用户合法解锁。")
-                pages = len(reader.pages)
-                require(0 < pages <= self.settings.max_pdf_pages, "FILE_VALIDATION_FAILED", "PDF 页数超限或为空。")
-                for page in reader.pages:
-                    _ = page.mediabox
+                _, pages, validation, pdf_warnings = inspect_pdf(file, self.settings.max_pdf_pages)
             except AppError:
                 raise
             except Exception as error:
@@ -67,7 +64,7 @@ class Documents:
             "version_id": version_id, "sha256": sha, "format": kind,
             "relative_path": str(target.relative_to(self.store.root)), "size": size, "pages": pages,
             "rights": rights, "source": source, "acquired_at": now(),
-            "validation": "pdf_structural" if kind == "pdf" else "signature_only_manual_review",
+            "validation": validation, "pdf_structure_warning_count": pdf_warnings,
         })
         return self.present_asset(asset)
 
@@ -111,12 +108,15 @@ class Documents:
             raise AppError("PARSING_TIMEOUT", "解析超时，原文件已保留。", "检查文件后恢复任务。") from None
         finally:
             output.unlink(missing_ok=True)
-        quality = "ocr_required" if result["scanned_pages"] else "layout_review_required" if result["complex_pages"] else "text_extracted_unreviewed"
+        recovered = result["pdf_validation"] == "pdf_structural_review_required"
+        quality = ("ocr_required" if result["scanned_pages"] else "structure_review_required" if recovered
+                   else "layout_review_required" if result["complex_pages"] else "text_extracted_unreviewed")
         artifact = {
             "id": parse_id, "asset_id": asset["id"], "version_id": asset["version_id"], "sha256": asset["sha256"],
             "parser": "pypdf", "parser_version": pypdf_version, "profile": profile, "at": now(),
             "quality": quality, "scanned_pages": result["scanned_pages"], "complex_pages": result["complex_pages"],
             "page_count": len(result["pages"]),
+            "pdf_validation": result["pdf_validation"], "pdf_structure_warning_count": result["pdf_structure_warning_count"],
         }
         with self.store.transaction():
             self.store.put("parse", artifact)
@@ -135,8 +135,10 @@ class Documents:
                 "quality": quality, "page_count": len(result["pages"]),
                 "reading_level": "fulltext" if any(e["text"].strip() for e in self.store.all("evidence")
                                                      if e["parse_artifact_id"] == parse_id) else "metadata_only",
-                "_job_state": "partially_succeeded" if result["scanned_pages"] else "succeeded",
-                "limitations": ["页码为 PDF 页序号；印刷页码、表格、公式和阅读顺序尚未人工核验。"]}
+                "pdf_validation": result["pdf_validation"],
+                "_job_state": "partially_succeeded" if result["scanned_pages"] or recovered else "succeeded",
+                "limitations": ["页码为 PDF 页序号；印刷页码、表格、公式和阅读顺序尚未人工核验。"]
+                               + (["源 PDF 含重复字典键，已兼容读取；结构与页面解释需要人工复核。"] if recovered else [])}
 
     def span(self, evidence: dict):
         return {key: protected(value, "fulltext", evidence["rights"]) if key == "text" else value

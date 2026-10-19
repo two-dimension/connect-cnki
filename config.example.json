@@ -100,7 +100,7 @@
         "https://login.cnki.net/tlogin/scripts/top.js",
         "https://login.cnki.net/tlogin/scripts/loginState.js"
       ],
-      "acceptance": "institution_network_search_abstract_and_carsi_login_verified",
+      "acceptance": "institution_network_carsi_search_and_pdf_evidence_pilot_verified_with_review_limitations",
       "policy_records": [
         {
           "operation": "automated_search",
