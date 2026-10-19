@@ -107,3 +107,23 @@ async def test_audit_records_timing_and_job_stage_without_request_bodies(app):
     row = dict(app.store.db.execute("SELECT * FROM audit WHERE job_id=?", (job["id"],)).fetchone())
     assert row["status"] == "succeeded" and row["stage"] == "job" and row["elapsed_ms"] >= 0
     assert "PRIVATE_JOB_ARGUMENT" not in str(row)
+
+
+def test_schema_two_review_migration_and_failed_three_rollback(tmp_path, monkeypatch):
+    root = tmp_path / "v2"
+    database = legacy_database(root)
+    with sqlite3.connect(database) as connection:
+        for statement in core.MIGRATIONS[2]:
+            connection.execute(statement)
+        connection.execute("PRAGMA user_version=2")
+    with monkeypatch.context() as patch:
+        patch.setitem(core.MIGRATIONS, 3, (core.MIGRATIONS[3][0], "INVALID MIGRATION SQL"))
+        with pytest.raises(sqlite3.DatabaseError):
+            Store(root)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert not connection.execute("SELECT 1 FROM sqlite_master WHERE name='records_project'").fetchone()
+    store = Store(root)
+    assert store.db.execute("SELECT count(*) FROM review_dependencies").fetchone()[0] == 0
+    assert store.papers("project_legacy")[0]["id"] == "version_legacy"
+    store.close()

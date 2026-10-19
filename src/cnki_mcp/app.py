@@ -32,6 +32,9 @@ from .models import (
 from .parsing import Documents
 from .policy import PolicyGate, protected
 from .providers import CNKIProvider
+from .review_evidence import ReviewEvidence
+from .review_models import CorpusItemInput, PaperCardInput, ReviewPlanInput
+from .review_workspace import ReviewWorkspace
 from .reviews import Reviews
 from .screening import Screening
 
@@ -103,6 +106,8 @@ class Application:
         self.documents = Documents(settings, self.store, self.gate)
         self.screening = Screening(self.store)
         self.reviews = Reviews(self.store, self.library, self.documents)
+        self.review_workspace = ReviewWorkspace(self.store, self.library, self.gate)
+        self.review_evidence = ReviewEvidence(self.review_workspace, settings)
         self.jobs.handlers = {"parse_fulltext": self.documents.parse, "acquire_fulltext": self._download}
         self.query_locks: dict[str, asyncio.Lock] = {}
 
@@ -145,13 +150,15 @@ class Application:
             self.settings.institution(institution_id)
         require(budget <= self.settings.max_candidates, "BUDGET_EXCEEDED", "预算超过本地保护上限。")
         project = self.store.put("project", {"question": question, "institution_id": institution_id,
-            "budget": budget, "created_at": now(), "parser_profile": "text_pdf", "config_digest": self.config_digest})
+            "budget": budget, "created_at": now(), "parser_profile": "text_pdf", "config_digest": self.config_digest,
+            "review_assistance_enabled": False})
         return {"project_id": project["id"], **project}
 
     @endpoint
     async def list_projects(self) -> dict:
         """列出本地研究项目和候选数量，便于重启后恢复工作。"""
-        return {"projects": [{**p, "paper_count": len(self.store.papers(p["id"]))} for p in self.store.all("project")]}
+        return {"projects": [{**p, "review_assistance_enabled": p.get("review_assistance_enabled", False),
+                              "paper_count": len(self.store.papers(p["id"]))} for p in self.store.all("project")]}
 
     @endpoint
     async def list_papers(self, project_id: ID, offset: Annotated[int, Field(ge=0)] = 0,
@@ -490,8 +497,19 @@ class Application:
 
     @endpoint
     async def read_paper(self, version_id: ID, pages: list[int] | None = None, asset_id: str | None = None,
-                         parse_artifact_id: str | None = None) -> dict:
+                         parse_artifact_id: str | None = None, project_id: str | None = None,
+                         snapshot_id: str | None = None, section_name: str | None = None,
+                         evidence_offset: Annotated[int, Field(ge=0)] = 0) -> dict:
         """读取指定 PDF 页和解析快照的证据；默认锁定首次快照，输出受模型内容策略限制。"""
+        if project_id or snapshot_id:
+            require(project_id, "INVALID_ARGUMENT", "快照阅读需指定项目。")
+            snapshot = self.review_workspace.corpus(project_id, snapshot_id)
+            item = self.review_workspace.item(snapshot, version_id)
+            require((not asset_id or asset_id == item["asset_id"]) and
+                    (not parse_artifact_id or parse_artifact_id == item["parse_artifact_id"]),
+                    "EVIDENCE_MISMATCH", "显式文件或解析标识与语料快照不一致。")
+            return self.review_evidence.read(project_id, snapshot["id"], version_id, pages, section_name, evidence_offset)
+        require(section_name is None and evidence_offset == 0, "INVALID_ARGUMENT", "章节和继续读取参数需项目快照上下文。")
         artifact = self.selected_parse(version_id, asset_id, parse_artifact_id)
         pages = pages or [1]
         require(len(pages) <= 20 and all(1 <= p <= artifact["page_count"] for p in pages),
@@ -511,16 +529,28 @@ class Application:
 
     @endpoint
     async def search_evidence(self, project_id: ID, query: Annotated[str, Field(min_length=1, max_length=500)],
-                              top_k: Annotated[int, Field(ge=1, le=10)] = 5) -> dict:
+                              top_k: Annotated[int, Field(ge=1, le=10)] = 5, snapshot_id: str | None = None,
+                              version_ids: list[str] | None = None, section_name: str | None = None,
+                              reading_levels: list[Literal["metadata_only", "abstract_only", "fulltext"]] | None = None,
+                              context_blocks: Annotated[int, Field(ge=0, le=2)] = 0, plan_id: str | None = None) -> dict:
         """按关键词检索项目全文片段，返回版本、文件哈希、解析快照和 PDF 页序号。"""
+        project = self.store.get(project_id, "project")
+        if snapshot_id or project.get("review_snapshot_id"):
+            return self.review_evidence.search(project_id, query, top_k, snapshot_id, version_ids, section_name,
+                                              reading_levels, context_blocks, plan_id)
+        require(not any((version_ids, section_name, reading_levels, context_blocks, plan_id)),
+                "CORPUS_SNAPSHOT_REQUIRED", "增强证据过滤需先创建快照。")
         ids = {p["id"] for p in self.store.papers(project_id)}
-        terms = [normalize(word) for word in query.split() if normalize(word)]
+        exact, words, grams = self.review_evidence.terms(query, {})
+        selected_parses = {version_id: next((s["parse_artifact_id"] for s in self.store.all("selection")
+            if s["version_id"] == version_id), next((p["id"] for p in self.store.all("parse")
+            if p["version_id"] == version_id), None)) for version_id in ids}
         scored = []
         for evidence in self.store.all("evidence"):
-            if evidence["version_id"] not in ids:
+            if evidence["version_id"] not in ids or evidence["parse_artifact_id"] != selected_parses[evidence["version_id"]]:
                 continue
             text = normalize(evidence["text"])
-            score = sum(text.count(word) for word in terms)
+            score = 10 * sum(text.count(word) for word in exact) + 3 * sum(text.count(word) for word in words) + sum(text.count(word) for word in grams)
             if score:
                 scored.append((score, evidence))
         scored.sort(key=lambda item: (-item[0], item[1]["id"]))
@@ -530,7 +560,47 @@ class Application:
                 break
             results.append({"score": score, **self.documents.span(evidence)})
             used += len(evidence["text"])
-        return {"results": results, "method": "normalized_keyword_count", "semantic_search": "not_enabled"}
+        return {"results": results, "method": "literal_words_chinese_bigrams_v1", "semantic_search": "not_enabled"}
+
+    @endpoint
+    async def set_review_assistance(self, project_id: ID, enabled: bool) -> dict:
+        """显式设置指定项目的增强综述开关；不联网，不删除历史，不启用其他组件。"""
+        return self.review_workspace.set_enabled(project_id, enabled)
+
+    @endpoint
+    async def save_review_plan(self, project_id: ID, plan: ReviewPlanInput, entity_id: str | None = None,
+                               parent_revision_id: str | None = None, actor_role: Literal["agent", "user"] = "agent",
+                               reason: Annotated[str, Field(min_length=1, max_length=2000)] = "initial") -> dict:
+        """保存不可变研究计划；更新需携带稳定实体标识与当前父版本。"""
+        return self.review_workspace.save_plan(project_id, plan, entity_id=entity_id,
+            parent_revision_id=parent_revision_id, actor_role=actor_role, reason=reason)
+
+    @endpoint
+    async def create_corpus_snapshot(self, project_id: ID, items: Annotated[list[CorpusItemInput], Field(min_length=1, max_length=100)],
+                                     plan_id: str | None = None) -> dict:
+        """显式固定并选择语料快照；冻结题录观测、文件、解析和研究角色，不下载或解析。"""
+        return self.review_workspace.snapshot(project_id, items, plan_id)
+
+    @endpoint
+    async def save_paper_card(self, project_id: ID, snapshot_id: ID, card: PaperCardInput,
+                              entity_id: str | None = None, parent_revision_id: str | None = None,
+                              actor_role: Literal["agent", "user"] = "agent",
+                              reason: Annotated[str, Field(min_length=1, max_length=2000)] = "initial") -> dict:
+        """保存带字段证据的文献卡修订；区分原文、解释与判断，不将解析成功当成阅读完成。"""
+        return self.review_workspace.save_card(project_id, snapshot_id, card, entity_id=entity_id,
+            parent_revision_id=parent_revision_id, actor_role=actor_role, reason=reason)
+
+    @endpoint
+    async def get_review_progress(self, project_id: ID) -> dict:
+        """只读增强综述进度、材料缺口和实际返回范围；不隐式启用或开始工作。"""
+        return self.review_workspace.progress(project_id)
+
+    @endpoint
+    async def get_review_artifact(self, project_id: ID, artifact_id: str | None = None,
+                                  kind: str | None = None, offset: Annotated[int, Field(ge=0)] = 0,
+                                  limit: Annotated[int, Field(ge=1, le=20)] = 10) -> dict:
+        """分页读取当前增强综述记录或按标识重放历史版本；关闭后仍可依许可查看。"""
+        return self.review_workspace.artifact(project_id, artifact_id, kind, offset, limit)
 
     @endpoint
     async def prepare_review(self, project_id: ID, question: Annotated[str, Field(max_length=4000)] = "",
@@ -616,6 +686,8 @@ class Application:
 
 
 TOOL_NAMES = [
+    "set_review_assistance", "save_review_plan", "create_corpus_snapshot", "save_paper_card",
+    "get_review_progress", "get_review_artifact",
     "create_project", "list_projects", "list_papers", "save_screening_policy", "review_decision",
     "resolve_duplicate", "rollback_merge", "list_institutions", "start_access_session", "verify_access_session",
     "close_access_session", "get_access_status", "search_papers", "get_paper", "import_records", "screen_papers",

@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 MIGRATIONS = {
     1: (
         "CREATE TABLE records (id TEXT PRIMARY KEY, kind TEXT NOT NULL, body TEXT NOT NULL, "
@@ -27,6 +27,13 @@ MIGRATIONS = {
         "ALTER TABLE audit ADD COLUMN job_id TEXT",
         "ALTER TABLE audit ADD COLUMN source_kind TEXT",
         "CREATE INDEX audit_job_id ON audit(job_id)",
+    ),
+    3: (
+        "CREATE INDEX records_project ON records(kind,json_extract(body,'$.project_id'))",
+        "CREATE TABLE review_dependencies (project_id TEXT NOT NULL REFERENCES records(id), "
+        "dependent_id TEXT NOT NULL REFERENCES records(id), source_id TEXT NOT NULL REFERENCES records(id), "
+        "relation TEXT NOT NULL, PRIMARY KEY(dependent_id,source_id,relation))",
+        "CREATE INDEX review_dependency_source ON review_dependencies(project_id,source_id)",
     ),
 }
 

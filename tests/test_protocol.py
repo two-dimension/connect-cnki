@@ -5,6 +5,8 @@ import sys
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from cnki_mcp.app import TOOL_NAMES
+
 
 async def test_real_stdio_handshake_tools_and_resources(tmp_path):
     config = tmp_path / "config.json"
@@ -15,7 +17,7 @@ async def test_real_stdio_handshake_tools_and_resources(tmp_path):
         async with ClientSession(read, write) as session:
             await session.initialize()
             tools = await session.list_tools()
-            assert len(tools.tools) == 29
+            assert {t.name for t in tools.tools} == set(TOOL_NAMES)
             for tool in tools.tools:
                 assert tool.description and tool.inputSchema["type"] == "object"
                 assert tool.outputSchema["type"] == "object"
