@@ -1,0 +1,18 @@
+{
+  "date": "2026-10-19",
+  "python": "3.12.7",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "scope": "local_synthetic_data_only_no_network",
+  "measurements": {
+    "local_access_status": {
+      "samples": 30,
+      "median_ms": 1.131,
+      "p95_ms": 2.517
+    },
+    "local_paper_read": {
+      "samples": 30,
+      "median_ms": 1.229,
+      "p95_ms": 1.808
+    }
+  }
+}
