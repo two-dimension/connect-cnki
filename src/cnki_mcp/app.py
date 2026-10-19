@@ -326,9 +326,11 @@ class Application:
                         "SOURCE_IDENTITY_CONFLICT", "详情题名与保存版本冲突，保留原记录。")
                 self.store.put("observation", {"version_id": version_id, "fields": detail,
                                                "rights": paper["rights"], "observed_at": now(), "source": "cnki_detail"})
-                paper.update(abstract=detail["abstract"], observed_at=now())
+                paper.update(abstract=detail["abstract"], abstract_status=detail.get("abstract_status", "unknown"), observed_at=now())
                 self.store.put("version", paper)
-        return {"paper": self.library.present(paper), "observations": [
+        return {"paper": self.library.present(paper),
+            "_warnings": ["来源页面当前只显示截断摘要；不能视为完整摘要。"] if paper.get("abstract_status") == "partial" else [],
+            "observations": [
             {"id": o["id"], "source": o["source"], "observed_at": o["observed_at"],
              "fields": {k: protected(v, "abstract", o["rights"]) if k == "abstract" else v
                         for k, v in o["fields"].items()}}

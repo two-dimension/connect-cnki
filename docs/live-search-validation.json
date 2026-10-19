@@ -1,0 +1,32 @@
+{
+  "observed_at": "2026-10-19T10:26:19.229371+00:00",
+  "transport": "official MCP Python client over stdio",
+  "institution_id": "xmu",
+  "identity_state": "ready",
+  "query": {
+    "text": "大语言模型",
+    "field": "subject",
+    "original_question": ""
+  },
+  "basic_search": "passed",
+  "cached_pagination": {
+    "state": "passed",
+    "collected": 6,
+    "source_pages_read": 1
+  },
+  "detail_refresh": {
+    "state": "passed",
+    "source_id": "CAPJ:HGSZ20261017002",
+    "abstract_present": true,
+    "abstract_characters": 503,
+    "observed_truncated": true
+  },
+  "opaque_detail_urls_in_persistent_records": 0,
+  "pending": [
+    "source_page_pagination",
+    "sort_semantics",
+    "other_query_fields",
+    "carsi",
+    "real_fulltext"
+  ]
+}

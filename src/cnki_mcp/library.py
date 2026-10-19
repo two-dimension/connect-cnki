@@ -55,6 +55,11 @@ class Library:
                 candidates.append((old, "identifier_conflict" if same_source or same_doi else "similar_title"))
         if match:
             version = match
+            if same_source:
+                version["detail_url"] = paper["detail_url"]
+                if normalize(paper["title"]) == normalize(version["title"]):
+                    version["title"] = paper["title"]
+                self.store.put("version", version)
         else:
             work = self.store.put("work", {})
             version = self.store.put("version", {**paper, "work_id": work["id"], "rights": rights,

@@ -70,12 +70,30 @@ def test_parser_does_not_collect_rows_beyond_remaining_budget():
 
 def test_current_kns_collect_attributes_provide_identity_without_opaque_detail_parameters():
     fixture = '''<table class="result-table-list"><tbody><tr>
-        <td class="name"><a class="fz14" href="https://fixture.example/kcms2/article/abstract?v=PRIVATE_DETAIL_TOKEN">Synthetic current layout</a></td>
+        <td class="name"><a class="fz14" href="https://fixture.example/kcms2/article/abstract?v=PRIVATE_DETAIL_TOKEN">Synthetic <em>current</em> layout</a></td>
         <td class="author"><a>Fixture Author</a></td><td class="source">Fixture Journal</td><td class="date">2026-10-19</td>
         <td class="operat"><a class="icon-collect" data-dbname="CJFDLAST2026" data-resource="CJFQ" data-filename="FIXTURE202601001"></a></td>
         </tr></tbody></table>'''
-    record, = extract_results(fixture, "https://fixture.example/kns8s/search", profile())
+    locators = {}
+    record, = extract_results(fixture, "https://fixture.example/kns8s/search", profile(), detail_locators=locators)
     assert record.source_id == "CJFQ:FIXTURE202601001" and record.paper_type == "journal"
-    assert record.detail_url == ("https://fixture.example/kcms2/article/abstract?"
-                                 "dbcode=CJFQ&dbname=CJFDLAST2026&filename=FIXTURE202601001")
+    assert record.title == "Synthetic current layout"
+    assert record.detail_url is None
+    assert locators[record.source_id] == "https://fixture.example/kcms2/article/abstract?v=PRIVATE_DETAIL_TOKEN"
     assert "PRIVATE_DETAIL_TOKEN" not in record.model_dump_json()
+
+
+async def test_detail_locators_are_session_scoped_and_cleared_on_close(app):
+    session = app.store.put("session", {"institution_id": "fixture", "state": "ready"})
+    paper = {"source_provider": "cnki", "source_id": "CJFQ:FIXTURE", "detail_url": None}
+    locator = "https://fixture.example/kcms2/article/abstract?v=PRIVATE_DETAIL_TOKEN"
+    app.access.detail_locators[(session["id"], paper["source_id"])] = locator
+    assert app.provider.detail_locator(session["id"], paper) == locator
+    from cnki_mcp.core import AppError
+
+    with pytest.raises(AppError) as failure:
+        app.provider.detail_locator("another_session", paper)
+    assert failure.value.code == "DETAIL_LINK_EXPIRED"
+    closed = await app.close_access_session(session["id"])
+    assert "PRIVATE_DETAIL_TOKEN" not in str(closed)
+    assert not app.access.detail_locators

@@ -23,6 +23,7 @@ class BrowserAccess:
         self.blocked_hosts: dict[str, dict[str, set[str]]] = {}
         self.https_upgrades: dict[str, int] = {}
         self.query_pages: dict[str, object] = {}
+        self.detail_locators: dict[tuple[str, str], str] = {}
 
     async def start(self, institution_id: str, mode: str) -> dict:
         profile = self.settings.institution(institution_id)
@@ -199,6 +200,18 @@ class BrowserAccess:
                         if re.search(r"saml|cookie|token|password|session|secret|captcha", structure["id"], re.I):
                             continue
                         item["search_widgets"].append(structure)
+                    item["known_search_choices"] = []
+                    for label in ("主题", "篇名", "篇关摘", "关键词", "作者", "来源", "相关度", "发表时间", "被引", "下载"):
+                        choices = page.get_by_text(label, exact=True)
+                        for index in range(min(await choices.count(), 4)):
+                            choice = choices.nth(index)
+                            choice_shape = await choice.evaluate("""element => ({
+                                tag: element.tagName.toLowerCase(), id: element.id,
+                                classes: typeof element.className === 'string' ? element.className : '',
+                                parent_id: element.parentElement?.id || '',
+                                parent_classes: typeof element.parentElement?.className === 'string' ? element.parentElement.className : ''
+                            })""")
+                            item["known_search_choices"].append({"label": label, "visible": await choice.is_visible(), **choice_shape})
                     item["result_layout"] = []
                     rows = page.locator(profile.selectors.result_rows)
                     for index in range(min(await rows.count(), 3)):
@@ -351,12 +364,15 @@ class BrowserAccess:
         self.blocked.discard(session_id)
         self.blocked_hosts.pop(session_id, None)
         self.https_upgrades.pop(session_id, None)
+        for key in [key for key in self.detail_locators if key[0] == session_id]:
+            self.detail_locators.pop(key, None)
         self.store.put("session", {**session, "state": "closed", "error_code": None})
         self.store.db.commit()
         return {"session_id": session_id, "state": "closed", "cleared": "project_ephemeral_context",
                 "persisted_state": "never_stored", "school_sso_logout": "not_performed"}
 
     async def shutdown(self):
+        self.detail_locators.clear()
         if self.browser:
             await self.browser.close()
         if self.playwright:

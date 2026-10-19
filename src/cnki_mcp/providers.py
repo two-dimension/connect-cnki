@@ -14,7 +14,8 @@ from .models import PaperInput, SearchFilters, SearchQuery
 from .policy import PolicyGate
 
 
-def extract_results(html: str, base_url: str, profile: Institution, record_limit: int | None = None) -> list[PaperInput]:
+def extract_results(html: str, base_url: str, profile: Institution, record_limit: int | None = None,
+                    detail_locators: dict[str, str] | None = None) -> list[PaperInput]:
     soup, records = BeautifulSoup(html, "html.parser"), []
     selectors = profile.selectors
     rows = soup.select(selectors.result_rows)
@@ -28,6 +29,7 @@ def extract_results(html: str, base_url: str, profile: Institution, record_limit
         validate_url(url, profile.provider_hosts)
         args = {k.lower(): v for k, v in parse_qs(urlsplit(url).query).items()}
         filename, dbcode, dbname = (args.get(key, [""])[0] for key in ("filename", "dbcode", "dbname"))
+        session_bound_link = not filename and "v" in args
         if not filename:
             # Current KNS links contain an opaque v parameter. Stable bibliographic
             # identifiers are exposed on the row's collect control instead.
@@ -45,8 +47,15 @@ def extract_results(html: str, base_url: str, profile: Institution, record_limit
         require(not dbname or re_safe(dbname), "SOURCE_LAYOUT_CHANGED", "结果数据库标识格式未知。")
         identity = f"{dbcode or dbname}:{filename}"
         target = urlsplit(url)
-        stable_args = {key: value for key, value in (("dbcode", dbcode), ("dbname", dbname), ("filename", filename)) if value}
-        detail_url = urlunsplit((target.scheme, target.netloc, target.path, urlencode(stable_args), ""))
+        if session_bound_link:
+            require(target.path.rstrip("/").casefold() == "/kcms2/article/abstract",
+                    "SOURCE_LAYOUT_CHANGED", "签名详情入口路径未知。")
+            if detail_locators is not None:
+                detail_locators[identity] = url
+            detail_url = None
+        else:
+            stable_args = {key: value for key, value in (("dbcode", dbcode), ("dbname", dbname), ("filename", filename)) if value}
+            detail_url = urlunsplit((target.scheme, target.netloc, target.path, urlencode(stable_args), ""))
         def value(selector, row=row):
             element = row.select_one(selector)
             return element.get_text(" ", strip=True) if element else None
@@ -60,7 +69,7 @@ def extract_results(html: str, base_url: str, profile: Institution, record_limit
         paper_type = {"CJFQ": "journal", "CJFD": "journal", "CDFD": "thesis", "CMFD": "thesis",
                       "CAPJ": "journal", "CPFD": "conference"}.get(dbcode, "other")
         records.append(PaperInput(
-            title=link.get_text(" ", strip=True), authors=authors,
+            title=re.sub(r"\s+", " ", link.get_text()).strip(), authors=authors,
             source=value(selectors.source), year=int(year_match[0]) if year_match else None,
             source_provider="cnki", source_id=identity, detail_url=public_url(detail_url), paper_type=paper_type,
         ))
@@ -172,7 +181,10 @@ class CNKIProvider:
             await self.guard_page(page, profile, session_id)
             raise AppError("SOURCE_LAYOUT_CHANGED", "结果等待超时或页面结构变化，停止采集。") from None
         await self.guard_page(page, profile, session_id)
-        records = extract_results(await page.content(), page.url, profile, record_limit)
+        detail_locators = {}
+        records = extract_results(await page.content(), page.url, profile, record_limit, detail_locators)
+        for source_id, locator in detail_locators.items():
+            self.access.detail_locators[(session_id, source_id)] = locator
         next_button = page.locator(selectors.next_page)
         has_next = bool(await next_button.count() and await next_button.first.is_visible()
                         and await next_button.first.is_enabled()
@@ -180,28 +192,37 @@ class CNKIProvider:
         return records, has_next
 
     async def detail(self, context, profile: Institution, session_id: str, paper: dict):
-        require(paper.get("detail_url") and paper.get("source_provider") == "cnki",
-                "SOURCE_NOT_SUPPORTED", "此版本没有已核验的知网详情地址。")
+        detail_url = self.detail_locator(session_id, paper)
         await self.throttle(profile.institution_id, "metadata_collect")
         page = await context.new_page()
         try:
-            await self.goto(page, paper["detail_url"], profile)
+            await self.goto(page, detail_url, profile)
             await self.guard_page(page, profile, session_id)
             title = page.locator(profile.selectors.detail_title)
             require(await title.count(), "SOURCE_LAYOUT_CHANGED", "详情缺少预期题名。")
             abstract = page.locator(profile.selectors.abstract)
+            abstract_text = (await abstract.first.inner_text()).strip() if await abstract.count() else None
+            if abstract_text and abstract_text.endswith(("...", "…")):
+                parent = abstract.first.locator("..")
+                for label in ("更多", "展开"):
+                    expand = parent.get_by_text(label, exact=True)
+                    if await expand.count() and await expand.first.is_visible():
+                        await expand.first.click()
+                        abstract_text = (await abstract.first.inner_text()).strip()
+                        break
             return {"title": (await title.first.inner_text()).strip(),
-                    "abstract": (await abstract.first.inner_text()).strip() if await abstract.count() else None}
+                    "abstract": abstract_text,
+                    "abstract_status": "partial" if abstract_text and abstract_text.endswith(("...", "…"))
+                                       else "source_text" if abstract_text else "unknown"}
         finally:
             await page.close()
 
     async def download(self, context, profile: Institution, session_id: str, paper: dict, target):
-        require(paper.get("detail_url") and paper.get("source_provider") == "cnki",
-                "SOURCE_NOT_SUPPORTED", "该版本无知网全文入口。")
+        detail_url = self.detail_locator(session_id, paper)
         await self.throttle(profile.institution_id, "fulltext_download")
         page = await context.new_page()
         try:
-            await self.goto(page, paper["detail_url"], profile)
+            await self.goto(page, detail_url, profile)
             await self.guard_page(page, profile, session_id)
             selectors = profile.selectors
             if selectors.not_subscribed and await page.locator(selectors.not_subscribed).count():
@@ -217,3 +238,10 @@ class CNKIProvider:
             self.access.assert_not_blocked(session_id)
         finally:
             await page.close()
+
+    def detail_locator(self, session_id: str, paper: dict) -> str:
+        require(paper.get("source_provider") == "cnki", "SOURCE_NOT_SUPPORTED", "该版本不是知网来源。")
+        locator = self.access.detail_locators.get((session_id, paper.get("source_id"))) or paper.get("detail_url")
+        require(locator, "DETAIL_LINK_EXPIRED", "当前会话没有此文献的正常详情入口。",
+                "在当前会话重新检索此文献，再刷新详情。")
+        return locator

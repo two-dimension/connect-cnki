@@ -33,6 +33,7 @@ class PaperInput(StrictModel):
     detail_url: str | None = Field(default=None, max_length=2000)
     doi: str | None = Field(default=None, max_length=250)
     abstract: str | None = Field(default=None, max_length=50000)
+    abstract_status: Literal["unknown", "source_text", "partial"] = "unknown"
     keywords: list[str] = Field(default_factory=list, max_length=100)
     volume: str | None = Field(default=None, max_length=100)
     issue: str | None = Field(default=None, max_length=100)
