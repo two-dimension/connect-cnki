@@ -23,6 +23,8 @@ class PolicyRecord(StrictModel):
     operation: Operation
     state: Literal["allowed", "denied", "unknown"] = "unknown"
     source: str = ""
+    basis_type: Literal["documented", "user_confirmation"] = "documented"
+    permitted_purpose: Literal["unrestricted", "personal_noncommercial_research"] = "unrestricted"
     verified_at: datetime | None = None
     expires_at: datetime | None = None
     verified_by: str = ""
@@ -34,10 +36,16 @@ class PolicyRecord(StrictModel):
     @model_validator(mode="after")
     def evidence_required(self):
         if self.state == "allowed":
-            require(bool(self.source and self.verified_at and self.expires_at and self.verified_by),
-                    "CONFIG_INVALID", "allowed 许可必须提供依据、核验人、核验时间与有效期。")
-            require(self.verified_at.tzinfo and self.expires_at.tzinfo,
+            require(bool(self.source and self.verified_at and self.verified_by),
+                    "CONFIG_INVALID", "allowed 许可必须提供依据、确认人和确认时间。")
+            require(self.expires_at is not None or self.basis_type == "user_confirmation",
+                    "CONFIG_INVALID", "文档型许可必须提供有效期；用户确认未指定到期日时可留空。")
+            require(self.basis_type != "user_confirmation" or self.permitted_purpose == "personal_noncommercial_research",
+                    "CONFIG_INVALID", "此用户确认模式仅用于非商业个人科研范围。")
+            require(self.verified_at.tzinfo and (self.expires_at is None or self.expires_at.tzinfo),
                     "CONFIG_INVALID", "许可时间必须包含时区。")
+            require(self.expires_at is None or self.expires_at > self.verified_at,
+                    "CONFIG_INVALID", "许可到期时间必须晚于确认时间。")
             require(bool(self.resource_types), "CONFIG_INVALID", "许可必须明确资源类型范围。")
         return self
 
@@ -108,6 +116,7 @@ class Settings(StrictModel):
     data_dir: Path = Field(default_factory=lambda: Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "cnki-mcp")
     import_roots: list[Path] = Field(default_factory=list)
     client: ClientProfile = Field(default_factory=ClientProfile)
+    usage_purpose: Literal["unspecified", "personal_noncommercial_research", "commercial"] = "unspecified"
     institutions: list[Institution] = Field(default_factory=list)
     max_candidates: int = Field(default=100, ge=1, le=10000)
     max_file_mb: int = Field(default=50, ge=1, le=500)

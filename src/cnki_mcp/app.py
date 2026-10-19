@@ -196,7 +196,10 @@ class Application:
         """列出学校档案、已启用模式、许可摘要及真实接入验收状态。"""
         return {"institutions": [{"institution_id": p.institution_id, "display_names": p.display_names,
             "access_modes": p.access_modes, "acceptance": p.acceptance, "guide_sources": p.guide_sources,
-            "policies": [{"operation": r.operation, "state": r.state, "source": r.source} for r in p.policy_records]}
+            "policies": [{"operation": r.operation, "state": r.state, "source": r.source,
+                          "basis_type": r.basis_type, "permitted_purpose": r.permitted_purpose,
+                          "resource_types": r.resource_types, "providers": r.providers,
+                          "expires_at": r.expires_at.isoformat() if r.expires_at else None} for r in p.policy_records]}
             for p in self.settings.institutions if not query or any(query in name for name in p.display_names)]}
 
     @endpoint
@@ -228,7 +231,7 @@ class Application:
             except AppError as error:
                 permission = error.code
         return {"session": session, "operation": operation, "permission": permission,
-                "subscriptions": profile.subscriptions, "checked_live": False}
+                "subscriptions": profile.subscriptions, "usage_purpose": self.settings.usage_purpose, "checked_live": False}
 
     @endpoint
     async def search_papers(self, project_id: ID, session_id: ID, query: SearchQuery,

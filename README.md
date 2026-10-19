@@ -2,7 +2,7 @@
 
 供 Codex 等本地 MCP 客户端调用的学术文献服务。根据 [项目实施规格](docs/学术文献MCP项目实施规格.md) 实现，试点学校为厦门大学。研究问题与综合写作由 Codex 完成，本服务负责获取、保存、筛选、引文和可定位的证据，不额外调用另一个大模型。
 
-已实现 29 个工具、3 个资源入口和 1 个工作流提示：校内网/CARSI 专用会话、受控检索与游标、本地文献库、保守去重及回滚、五学科筛选、RIS/BibTeX/CSL JSON 导入导出、GB/T 7714—2025/2015 引文、PDF 证据与综述草稿检查、任务取消恢复。安装后可立即使用本地导入链路。厦大校内网机构识别已通过真实 MCP 调用，返回 `ready / 厦门大学`。**真实文献检索及 CARSI 尚未验收**；用户已确认取得检索许可，具体依据、范围及有效期待登记。详情见 [验收状态](docs/验收状态.md)。
+已实现 29 个工具、3 个资源入口和 1 个工作流提示：校内网/CARSI 专用会话、受控检索与游标、本地文献库、保守去重及回滚、五学科筛选、RIS/BibTeX/CSL JSON 导入导出、GB/T 7714—2025/2015 引文、PDF 证据与综述草稿检查、任务取消恢复。安装后可立即使用本地导入链路。厦大校内网机构识别已通过真实 MCP 调用，返回 `ready / 厦门大学`。用户已确认非商业个人科研范围的许可，本机已按此配置；**真实文献检索及 CARSI 尚未验收**。详情见 [验收状态](docs/验收状态.md)。
 
 ## 安装与启动
 
@@ -80,6 +80,7 @@ uv run cnki-mcp --config config.local.json --access-check xmu
 
 - 对学校来源，五项操作分别为 `automated_search`、`metadata_collect`、`fulltext_download`、`local_parse_index`、`external_model_use`。状态分为 `allowed / denied / unknown`。
 - 维护者根据真实依据填写 `source`、`verified_by`、含时区的 `verified_at / expires_at` 和 `resource_types`；外部模型处理还需 `providers: ["openai"]`。不从“在校内网”自动推导上述权限。
+- 用户明确确认的非商业个人科研许可可设 `basis_type="user_confirmation"`、`permitted_purpose="personal_noncommercial_research"`，并将顶层 `usage_purpose` 设为同值。用户未指定到期日时 `expires_at` 保持空值，不编造日期；修改用途为商业或未说明时，该确认不适用。其他学校的示例配置仍保留未知状态，文档型许可继续要求有效期。
 - 对合法导入文件，`ImportRights` 明确 `basis`、`allow_local_parse` 和 `allowed_recipients`，例如 `local` 或确有授权的 `openai`。未明确授权时可以保存题录，内容保持屏蔽。
 - 不保存账号、密码、cookie、SAML 断言、登录截图或日常浏览器配置。会话不跨重启持久化；重启后须重新建立会话。
 

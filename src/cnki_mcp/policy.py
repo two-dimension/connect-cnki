@@ -15,9 +15,13 @@ class PolicyGate:
         record = next((p for p in institution.policy_records if p.operation == operation), None)
         require(record and record.state != "unknown", "POLICY_UNVERIFIED", "对应操作许可尚未核验。", "在本地档案登记有效许可依据。")
         require(record.state == "allowed", "OPERATION_NOT_PERMITTED", "档案明确禁止该操作。")
-        require(record.expires_at and record.verified_at
-                and record.verified_at <= datetime.now(UTC) < record.expires_at,
+        current = datetime.now(UTC)
+        require(record.verified_at and record.verified_at <= current
+                and (record.expires_at is None or current < record.expires_at),
                 "POLICY_UNVERIFIED", "许可已到期或尚未生效。", "重新核验许可。")
+        require(record.permitted_purpose == "unrestricted"
+                or self.settings.usage_purpose == record.permitted_purpose,
+                "OPERATION_NOT_PERMITTED", "本许可仅适用于非商业个人科研用途。")
         if resource_type:
             require(resource_type in record.resource_types or "*" in record.resource_types,
                     "OPERATION_NOT_PERMITTED", "该文献类型不在许可范围内。")

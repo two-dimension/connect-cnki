@@ -65,6 +65,33 @@ def test_gate_unknown_denied_expired_and_provider_scope(tmp_path):
     assert gate.output({"nested": [value]})["nested"][0]["withheld"]
 
 
+def test_user_confirmation_without_invented_expiry_is_bound_to_personal_research(tmp_path):
+    policy = PolicyRecord(operation="external_model_use", state="allowed", source="Synthetic user confirmation",
+        basis_type="user_confirmation", permitted_purpose="personal_noncommercial_research",
+        verified_by="fixture_user", verified_at=datetime.now(UTC) - timedelta(minutes=1),
+        resource_types=["*"], providers=["openai"])
+    settings = Settings(data_dir=tmp_path, usage_purpose="personal_noncommercial_research",
+        client=ClientProfile(location="external", provider="openai", allowed_content=["metadata", "abstract"]),
+        institutions=[Institution(institution_id="fixture", display_names=["Fixture"], policy_records=[policy])])
+    gate = PolicyGate(settings)
+    assert gate.check("fixture", "external_model_use", "journal").expires_at is None
+    value = protected("Synthetic permitted abstract", "abstract", {"institution_id": "fixture", "resource_type": "journal"})
+    assert gate.output(value) == "Synthetic permitted abstract"
+    for purpose in ("commercial", "unspecified"):
+        settings.usage_purpose = purpose
+        with pytest.raises(AppError) as failure:
+            gate.check("fixture", "external_model_use")
+        assert failure.value.code == "OPERATION_NOT_PERMITTED"
+        assert gate.output(value)["withheld"]
+
+
+def test_documented_permission_keeps_expiry_requirement():
+    with pytest.raises(AppError) as failure:
+        PolicyRecord(operation="automated_search", state="allowed", source="Synthetic document",
+            verified_by="test", verified_at=datetime.now(UTC), resource_types=["*"])
+    assert failure.value.code == "CONFIG_INVALID"
+
+
 def test_conservative_identity_and_restart(tmp_path):
     store = Store(tmp_path)
     library = Library(store)
