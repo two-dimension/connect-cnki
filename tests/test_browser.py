@@ -156,15 +156,18 @@ async def test_real_browser_synthetic_search_pagination_and_identity(app):
 
 
 @pytest.mark.browser
-@pytest.mark.parametrize(("popup_path", "delayed_controls"), [
-    ("/download-window", False), ("/fixture.pdf", False), ("/fixture.pdf", True)])
-async def test_pdf_download_in_new_window_is_registered_and_windows_are_closed(app, tmp_path, popup_path, delayed_controls):
+@pytest.mark.parametrize(("popup_path", "delayed_controls", "thesis_controls"), [
+    ("/download-window", False, False), ("/fixture.pdf", False, False),
+    ("/fixture.pdf", True, False), ("/fixture.pdf", True, True)])
+async def test_pdf_download_in_new_window_is_registered_and_windows_are_closed(
+        app, tmp_path, popup_path, delayed_controls, thesis_controls):
     pdf = tmp_path / "fixture.pdf"
     make_pdf(pdf)
     profile = Institution(institution_id="download_fixture", display_names=["Fixture University"],
         allowed_hosts=["fixture.example"], provider_hosts=["fixture.example"],
-        selectors=Selectors(institution_label=".institution", pdf_download="#pdfDown:visible",
-                            resource_available="#pdfDown:visible"),
+        selectors=Selectors(institution_label=".institution",
+            pdf_download='#pdfDown:visible, a#cajDown:text-is("PDF下载"):visible',
+            resource_available='#pdfDown:visible, a#cajDown:text-is("PDF下载"):visible'),
         policy_records=[PolicyRecord(operation=operation, state="allowed", source="Synthetic download fixture",
             verified_by="tests", verified_at=datetime.now(UTC) - timedelta(days=1),
             expires_at=datetime.now(UTC) + timedelta(days=1), resource_types=["*"], min_interval_seconds=0.1)
@@ -196,18 +199,24 @@ async def test_pdf_download_in_new_window_is_registered_and_windows_are_closed(a
                                     body='<script>setTimeout(()=>location.href="/fixture.pdf",70)</script>')
             else:
                 popup_handler = "onclick=\"window.open(this.href,'_blank');return false\"" if popup_path == "/download-window" else ""
-                await route.fulfill(status=200, content_type="text/html", body=f'''
+                pdf_id = "cajDown" if thesis_controls else "pdfDown"
+                caj_control = '<a id="cajDown" href="/fixture.caj">CAJ下载</a>' if thesis_controls else ""
+                await route.fulfill(status=200, content_type="text/html; charset=utf-8", body=f'''
                     <div class="institution">Fixture University</div><div class="wx-tit"><h1>Fixture download</h1></div>
                     <div id="download-controls" {'hidden' if delayed_controls else ''}>
-                    <a id="pdfDown" target="_blank" href="{popup_path}" {popup_handler}>PDF下载</a>
-                    <a id="pdfDown" hidden>PDF下载</a></div>
+                    {caj_control}<a id="{pdf_id}" target="_blank" href="{popup_path}" {popup_handler}>PDF下载</a>
+                    <a id="{pdf_id}" hidden>PDF下载</a></div>
+                    <a hidden href="https://fixture.example/file?signature=PRIVATE_DOWNLOAD_TOKEN">PDF diagnostic</a>
                     <script>setTimeout(()=>document.querySelector('#download-controls').hidden=false,800)</script>''')
 
         await context.route("**/*", serve)
         await context.route("**/*", lambda route: app.access.route_request(sid, profile, route))
         homepage = await context.new_page()
-        await homepage.goto("https://fixture.example/")
+        await homepage.goto("https://fixture.example/kcms2/article/abstract")
         assert (await app.verify_access_session(sid))["data"]["state"] == "ready"
+        controls = (await app.access.inspect(sid))["pages"][0]["download_controls"]
+        assert any(c["target_shape"]["query_keys"] == ["signature"] for c in controls)
+        assert "PRIVATE_DOWNLOAD_TOKEN" not in str(controls)
         project = (await app.create_project("Download fixture", profile.institution_id))["data"]["project_id"]
         record = PaperInput(title="Fixture download", authors=["Fixture Author"], year=2024,
                             source_provider="cnki", source_id="CJFD:DOWNLOADFIXTURE",
@@ -226,6 +235,7 @@ async def test_pdf_download_in_new_window_is_registered_and_windows_are_closed(a
         assert asset["validation"] == "pdf_structural" and asset["version_id"] == version
         assert len(context.pages) == 1 and context.pages[0] == homepage
         assert sum(url.endswith(popup_path) for url in received_urls) == 1
+        assert not any("fixture.caj" in url for url in received_urls)
         other = record.model_copy(update={"title": "Different fixture version", "source_id": "CJFD:DIFFERENTFIXTURE"})
         other_id = app.library.ingest(project, other, rights, "cnki_search")["version_id"]
         app.store.db.commit()

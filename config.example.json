@@ -85,8 +85,8 @@
           "latest": "#orderList #PT",
           "cited": "#orderList #CF"
         },
-        "pdf_download": "#pdfDown:visible",
-        "resource_available": "#pdfDown:visible"
+        "pdf_download": "#pdfDown:visible, a#cajDown:text-is(\"PDF下载\"):visible",
+        "resource_available": "#pdfDown:visible, a#cajDown:text-is(\"PDF下载\"):visible"
       },
       "subscriptions": [],
       "verified_at": "2026-10-19T10:40:17+00:00",
