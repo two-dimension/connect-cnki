@@ -10,6 +10,8 @@
 
 工具参数、修订与恢复示例见 [V2 综述使用指南](docs/V2综述使用指南.md)。升级后重新连接 MCP；数据库自动备份并迁移至 schema 3。`export_project` 默认只导出基础产物，综述成果需显式 `include_review=true`。八篇已有材料的隔离回归已经跑通；同一真实课题的人工质量验收仍待完成。
 
+分阶段提交和逐项工程验收映射见 [V2 交付清单](docs/V2交付清单.md)。可通过 `scripts/validate_review_protocol.py` 重跑独立 stdio 冒烟，通过 `scripts/validate_review_v2.py` 重跑八篇材料的隔离回归。
+
 ## 安装与启动
 
 Windows 本地环境需要 Python 3.12、[uv](https://docs.astral.sh/uv/) 和 Node.js（只用于 CSL 文本引文）。默认通过本机 Edge 的临时独立上下文打开知网，不读取日常 Edge 的个人配置。也可在配置中指定 `chrome` 或 `chromium`。

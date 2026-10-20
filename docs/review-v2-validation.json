@@ -1,9 +1,9 @@
 {
-  "at": "2026-10-19T14:47:07.046519+00:00",
+  "at": "2026-10-20T07:41:55.555909+00:00",
   "service_version": "0.2.0",
   "scope": "isolated_copy_engineering_regression_only",
   "source_database_access": "SQLite mode=ro backup API",
-  "source_schema": 2,
+  "source_schema": 3,
   "test_schema": 3,
   "papers": [
     {
@@ -87,6 +87,6 @@
   "model_calls": 0,
   "network_calls": 0,
   "semantic_quality_acceptance": "not_performed",
-  "clone_relative_path": "tmp\\review-v2-regression-502acec67b884e0b96b5486b3463f021",
-  "elapsed_ms": 1412.771
+  "clone_relative_path": "tmp\\review-v2-regression-9152ccc8e253462f962f4737ded0deb6",
+  "elapsed_ms": 1624.226
 }
