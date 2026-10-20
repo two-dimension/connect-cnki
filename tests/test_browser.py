@@ -242,7 +242,15 @@ async def test_pdf_download_in_new_window_is_registered_and_windows_are_closed(a
             while "unapproved.fixture.example" not in app.access.blocked_hosts.get(sid, {}).get("navigation", set()):
                 await asyncio.sleep(0.02)
 
-        await asyncio.wait_for(wait_for_block(), 10)
+        try:
+            await asyncio.wait_for(wait_for_block(), 10)
+        except TimeoutError:
+            pytest.fail(str({"received_urls": received_urls,
+                "blocked_hosts": app.access.blocked_hosts.get(sid),
+                "guard_errors": app.access.guard_errors.get(sid),
+                "guarded_pages": [page.url for page in app.access.redirect_guards],
+                "pages": [page.url for page in context.pages],
+                "popup_bootstraps": sorted(app.access.popup_bootstraps.get(sid, set()))}))
         assert not any("unapproved.fixture.example" in url for url in received_urls)
         await app.close_access_session(sid)
         await browser.close()
