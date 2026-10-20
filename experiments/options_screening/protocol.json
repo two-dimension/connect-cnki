@@ -119,10 +119,11 @@
   "adoption_baseline": "当前多查询并集及字面排序中较强者为主要基线；单宽查询只是获取消融，不能独自证明新增机制有效。现有Codex本来就能编排多次search_papers。",
   "amendment_log": [
     {
-      "at": "2026-10-20T03:05:00+00:00",
+      "at": "2026-10-20T03:03:20.687427+00:00",
       "change": "Clarify strong adoption comparator before B-arm retrieval or relevance labeling",
       "reason": "Current V2 already supports caller-side multi-query orchestration; avoid attributing existing capability to RRF or structured screening",
-      "observed_before_amendment": "Only A-arm metadata pages, no reference labels, no B rankings or reviews"
+      "observed_before_amendment": "Only A-arm metadata pages, no reference labels, no B rankings or reviews",
+      "timestamp_note": "Recorded from system UTC clock before B-arm retrieval and reference labeling"
     }
   ]
 }
