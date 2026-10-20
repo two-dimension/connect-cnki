@@ -27,7 +27,8 @@ def append(runtime, rows):
             "material_digest": digest(material), "evaluator_kind": "agent", "independent_human_gold": False,
             "model_checkpoint": "not_exposed_by_calling_client", "prompt_version": "topic-reference-20261020.1",
             "source_observation_id": material["observations"][-1]["id"],
-            "at": datetime.now(UTC).isoformat(), "rank_or_score_visible": False}
+            "at": datetime.now(UTC).isoformat(), "experimental_rrf_or_lexical_scores_visible": False,
+            "source_page_title_sanity_checks_seen": True, "blinding": "randomized_reading_order_not_strict_double_blind"}
     path.write_text(json.dumps(saved, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return {"annotations": len(saved), "new": len(rows), "independent_human_gold": False}
 

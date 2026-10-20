@@ -19,7 +19,12 @@ def normalized(value):
 
 
 def query_key(arguments):
-    return digest({k: arguments.get(k) for k in ("query", "filters", "sort", "filter_mode")})
+    query = arguments["query"]
+    filters = arguments.get("filters") or {}
+    return digest({"query": {"text": query["text"].strip(), "field": query.get("field", "subject")},
+        "filters": {"year_from": filters.get("year_from"), "year_to": filters.get("year_to"),
+                    "paper_types": sorted(filters.get("paper_types") or [])},
+        "sort": arguments.get("sort", "relevance"), "filter_mode": arguments.get("filter_mode", "source")})
 
 
 def rrf(lists, k=60):
@@ -74,10 +79,11 @@ def ranking_metrics(ranking, labels, k, reference_ids=None):
     positive = {v for v in reference if labels.get(v) == "core"}
     uncertain = {v for v in reference if labels.get(v) in {None, "uncertain"}}
     hit = len(set(top) & positive)
-    denominator = len(top)
-    return {"k": k, "returned": denominator, "positive": hit,
-        "uncertain": len(set(top) & uncertain), "precision_lower": hit / denominator if denominator else None,
-        "precision_upper": (hit + len(set(top) & uncertain)) / denominator if denominator else None,
+    denominator = k
+    return {"k": k, "returned": len(top), "positive": hit,
+        "available_precision_lower": hit / len(top) if top else None,
+        "uncertain": len(set(top) & uncertain), "precision_lower": hit / denominator,
+        "precision_upper": (hit + len(set(top) & uncertain)) / denominator,
         "recall_in_labeled_reference": hit / len(positive) if positive and not uncertain else None,
         "known_positive_reference_size": len(positive), "unresolved_reference_size": len(uncertain),
         "reference_size": len(reference), "global_database_recall": "not_measured"}
@@ -86,13 +92,17 @@ def ranking_metrics(ranking, labels, k, reference_ids=None):
 def freeze(runtime, protocol_path):
     protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
     responses = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(runtime.glob("response-*.json"))]
-    papers, queries, details = {}, {}, {}
+    base_path = runtime / "initial-candidate-snapshot.json"
+    base = json.loads(base_path.read_text(encoding="utf-8")) if base_path.exists() else None
+    papers, queries, details = (dict(base["papers"]) if base else {}), ({q["query_id"]: q for q in base["queries"]} if base else {}), {}
     for response in responses:
         result = response.get("result") or {}
         if result.get("status") != "succeeded":
             continue
         data = result.get("data") or {}
         if response["tool"] == "search_papers":
+            if base:
+                continue  # Recovery queries cannot silently expand the registered candidate pool or vote again.
             query_id = data["query_id"]
             entry = queries.setdefault(query_id, {"query_id": query_id, "query_key": query_key(response["arguments"]),
                 "arguments": response["arguments"], "version_ids": [], "response_files": [], "elapsed_ms": 0})
@@ -140,7 +150,11 @@ def freeze(runtime, protocol_path):
             "material_digest": digest(paper)})
     blind.sort(key=lambda p: digest([protocol["protocol_version"], p["blind_id"]]))
     snapshot = {"protocol_digest": digest(protocol), "queries": list(queries.values()), "papers": papers,
-                "blind_packet": blind, "groups": list(groups.values()), "labels_seen": False}
+                "blind_packet": blind, "groups": list(groups.values()), "labels_seen": (runtime / "reference-labels.json").exists(),
+                "blinding": "experimental_scores_hidden_source_sanity_checks_seen_not_double_blind"}
+    if base:
+        original_split = {r["version_id"]: (r["group_id"], r["split"]) for r in base["blind_packet"]}
+        assert all(original_split[r["version_id"]] == (r["group_id"], r["split"]) for r in blind), "group split changed after initial freeze"
     target = runtime / f"candidate-snapshot-{digest(snapshot)[:12]}.json"
     target.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
     (runtime / "blind-packet.json").write_text(json.dumps(blind, ensure_ascii=False, indent=2), encoding="utf-8")

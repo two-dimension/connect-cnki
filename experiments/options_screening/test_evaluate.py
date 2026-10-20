@@ -26,5 +26,6 @@ def test_explicit_violation_preserves_other_unknowns():
 
 def test_uncertain_not_counted_as_relevant_or_complete_recall():
     result = ranking_metrics(["x", "y"], {"x": "core", "y": "uncertain"}, 10)
-    assert result["precision_lower"] == .5 and result["precision_upper"] == 1
+    assert result["available_precision_lower"] == .5
+    assert result["precision_lower"] == .1 and result["precision_upper"] == .2
     assert result["recall_in_labeled_reference"] is None

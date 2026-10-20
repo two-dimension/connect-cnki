@@ -38,13 +38,29 @@ async def run(args):
         args=["-m", "cnki_mcp", "--config", str(trial_config)], cwd=str(config.parent),
         env={**os.environ, "PYTHONUTF8": "1"})
     sequence = len(list(runtime.glob("response-*.json")))
+    if args.queue_dir:
+        args.queue_dir.mkdir(parents=True, exist_ok=True)
+        (runtime / "bridge-process.json").write_text(json.dumps({"pid": os.getpid(), "started_at": now(),
+            "queue_dir": str(args.queue_dir.resolve())}), encoding="utf-8")
+
+    async def next_command():
+        if not args.queue_dir:
+            return (await asyncio.to_thread(input)).strip(), None
+        while True:
+            pending = sorted(args.queue_dir.glob("*.request.json"))
+            if pending:
+                source = pending[0]
+                active = source.with_suffix(".processing")
+                source.replace(active)
+                return "file " + str(active), active
+            await asyncio.sleep(.5)
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as client:
             await client.initialize()
             emit({"bridge": "ready", "runtime": str(runtime), "at": now(), "transport": "official MCP stdio"})
             while True:
                 try:
-                    line = (await asyncio.to_thread(input)).strip()
+                    line, queue_file = await next_command()
                 except EOFError:
                     break
                 if line in {"quit", "exit"}:
@@ -56,6 +72,10 @@ async def run(args):
                     batch = payload if isinstance(payload, list) else [payload]
                     for command in batch:
                         tool = command["tool"]
+                        if tool == "__shutdown__":
+                            if queue_file:
+                                queue_file.replace(queue_file.with_suffix(".done"))
+                            return
                         if tool not in TOOL_NAMES:
                             raise ValueError("unknown tool")
                         started = time.perf_counter()
@@ -64,7 +84,8 @@ async def run(args):
                         file = runtime / f"response-{sequence:04d}.json"
                         data = result.structuredContent
                         envelope = {"tool": tool, "at": now(), "elapsed_ms": round((time.perf_counter()-started)*1000, 3),
-                                    "arguments": command.get("arguments", {}), "result": data, "protocol_error": result.isError}
+                                    "arguments": command.get("arguments", {}), "result": data, "protocol_error": result.isError,
+                                    "request_file": queue_file.name if queue_file else None}
                         file.write_text(json.dumps(envelope, ensure_ascii=False, indent=2), encoding="utf-8")
                         summary = {"response": str(file), "tool": tool, "status": data.get("status") if data else "protocol_error"}
                         if data:
@@ -79,6 +100,8 @@ async def run(args):
                         emit(summary)
                         if not data or data["status"] in {"failed", "waiting_for_user"}:
                             break
+                    if queue_file:
+                        queue_file.replace(queue_file.with_suffix(".done"))
                 except (ValueError, KeyError, TypeError, OSError):
                     emit({"error": "INVALID_BRIDGE_COMMAND"})
 
@@ -87,6 +110,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=Path("config.local.json"))
     parser.add_argument("--runtime", type=Path, required=True)
+    parser.add_argument("--queue-dir", type=Path, help="Durable file queue for a hidden background client; no browser credentials persisted.")
     arguments = parser.parse_args()
     try:
         asyncio.run(run(arguments))
