@@ -1,4 +1,7 @@
 from evaluate import aggregate, ranking_metrics, rrf
+from screen_trial import run as screen_trial
+
+from cnki_mcp.core import digest
 
 
 def test_rrf_no_duplicate_query_or_duplicate_document_votes():
@@ -29,3 +32,24 @@ def test_uncertain_not_counted_as_relevant_or_complete_recall():
     assert result["available_precision_lower"] == .5
     assert result["precision_lower"] == .1 and result["precision_upper"] == .2
     assert result["recall_in_labeled_reference"] is None
+
+
+def test_structured_trial_rejects_foreign_observation_and_quotation():
+    import copy
+
+    import pytest
+
+    snapshot = {"queries": [{"arguments": {"query": {"text": "期权流动性"}}, "version_ids": ["v"]}],
+                "papers": {"v": {"title": "期权流动性", "abstract": "研究买卖价差", "observations": [{"id": "o"}]}}}
+    protocol = {"topic_criteria": [{"criterion_id": "topic", "stage": "title_abstract", "required": True}]}
+    packet = {"snapshot_digest": digest(snapshot), "origin": "calling_agent_shared_labels", "assessments": [
+        {"version_id": "v", "shared_agent_label": "core", "criteria": [{"criterion_id": "topic", "judgment": "meets",
+          "references": [{"version_id": "v", "observation_id": "o", "quotation": "研究买卖价差"}]}]}]}
+    result = screen_trial(snapshot, protocol, packet)
+    assert result["counts"] == {"advance_to_fulltext": 1}
+    assert not result["abstract_approval_is_final_inclusion"]
+    for field, value in (("version_id", "other"), ("observation_id", "other"), ("quotation", "不存在的引语")):
+        altered = copy.deepcopy(packet)
+        altered["assessments"][0]["criteria"][0]["references"][0][field] = value
+        with pytest.raises(AssertionError):
+            screen_trial(snapshot, protocol, altered)
