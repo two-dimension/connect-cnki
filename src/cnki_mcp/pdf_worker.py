@@ -22,6 +22,7 @@ def parse(source: Path, destination: Path, max_pages: int):
                       "section": None, "bbox": None})
     destination.write_text(json.dumps({"pages": pages, "scanned_pages": scanned,
                                        "complex_pages": complex_pages, "pdf_validation": validation,
+                                       "pdf_encryption": "default_reader_access" if reader.is_encrypted else "none",
                                        "pdf_structure_warning_count": structure_warnings}, ensure_ascii=False), encoding="utf-8")
 
 

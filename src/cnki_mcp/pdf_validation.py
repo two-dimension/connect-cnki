@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from pypdf import PdfReader
-from pypdf.errors import PdfReadError
+from pypdf.errors import FileNotDecryptedError, PdfReadError
 
 from .core import AppError, require
 
@@ -42,8 +42,14 @@ def _capture_warnings():
 def inspect_pdf(source: Path, max_pages: int) -> tuple[PdfReader, int, str, int]:
     def read(strict):
         reader = PdfReader(source, strict=strict)
-        require(not reader.is_encrypted, "FILE_VALIDATION_FAILED", "加密 PDF 需先由用户合法解锁。")
-        pages = len(reader.pages)
+        try:
+            # PdfReader can open standard empty-user-password documents by default;
+            # is_encrypted stays true even when the reader already has access.
+            # Never supply, guess or retain passwords, or rewrite the source file.
+            pages = len(reader.pages)
+        except FileNotDecryptedError:
+            raise AppError("FILE_VALIDATION_FAILED", "PDF 需要打开密码，未尝试密码输入。",
+                           "请先使用正常阅读器合法打开并提供可直接读取的副本。") from None
         require(0 < pages <= max_pages, "FILE_VALIDATION_FAILED", "PDF 页数超限或为空。")
         for page in reader.pages:
             _ = page.mediabox

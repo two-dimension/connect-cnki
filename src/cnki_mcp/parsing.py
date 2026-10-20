@@ -31,9 +31,11 @@ class Documents:
         pages = None
         validation = "signature_only_manual_review"
         pdf_warnings = 0
+        pdf_encryption = None
         if kind == "pdf":
             try:
-                _, pages, validation, pdf_warnings = inspect_pdf(file, self.settings.max_pdf_pages)
+                reader, pages, validation, pdf_warnings = inspect_pdf(file, self.settings.max_pdf_pages)
+                pdf_encryption = "default_reader_access" if reader.is_encrypted else "none"
             except AppError:
                 raise
             except Exception as error:
@@ -64,7 +66,7 @@ class Documents:
             "version_id": version_id, "sha256": sha, "format": kind,
             "relative_path": str(target.relative_to(self.store.root)), "size": size, "pages": pages,
             "rights": rights, "source": source, "acquired_at": now(),
-            "validation": validation, "pdf_structure_warning_count": pdf_warnings,
+            "validation": validation, "pdf_structure_warning_count": pdf_warnings, "pdf_encryption": pdf_encryption,
         })
         return self.present_asset(asset)
 
@@ -117,6 +119,7 @@ class Documents:
             "quality": quality, "scanned_pages": result["scanned_pages"], "complex_pages": result["complex_pages"],
             "page_count": len(result["pages"]),
             "pdf_validation": result["pdf_validation"], "pdf_structure_warning_count": result["pdf_structure_warning_count"],
+            "pdf_encryption": result.get("pdf_encryption", "unknown"),
         }
         with self.store.transaction():
             self.store.put("parse", artifact)
