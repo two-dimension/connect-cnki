@@ -1,0 +1,20 @@
+{
+  "at": "2026-10-20T07:51:46.274261+00:00",
+  "service_version": "0.2.0",
+  "wheel_entries": 39,
+  "sdist_entries": 79,
+  "v2_modules_and_csl_assets_match_sources": true,
+  "popup_guard_fix_in_wheel": true,
+  "validation_scripts_in_sdist": true,
+  "runtime_pdf_auth_local_config_and_node_modules_excluded": true,
+  "artifacts": [
+    {
+      "name": "cnki_literature_mcp-0.2.0-py3-none-any.whl",
+      "sha256": "689143fe33c8830031ca76d0ef45596c076e27ec16c43262c206734453859253"
+    },
+    {
+      "name": "cnki_literature_mcp-0.2.0.tar.gz",
+      "sha256": "b324c900e92ed2554e438aad223a2cbd24a442e8b8d499d663829688bc81bc4a"
+    }
+  ]
+}

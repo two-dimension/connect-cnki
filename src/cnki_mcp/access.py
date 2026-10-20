@@ -142,7 +142,20 @@ class BrowserAccess:
                         body=f'<html><head><meta http-equiv="refresh" content="0;url={destination}"></head>'
                              '<body>正在打开专用窗口…</body></html>')
                     return
+                already_guarded = request_page in self.redirect_guards
                 await self.ensure_redirect_guard(session_id, profile.institution_id, request_page)
+                if (not already_guarded and route.request.is_navigation_request()
+                        and route.request.url in self.popup_bootstraps.get(session_id, set())):
+                    # Installing Fetch during a paused navigation can miss that
+                    # navigation's native redirect chain. Start a fresh local GET
+                    # only after installation, before allowing any remote request.
+                    require(route.request.method == "GET", "HOST_NOT_ALLOWED", "新窗口不能重放认证提交。")
+                    destination = html.escape(route.request.url, quote=True)
+                    await route.fulfill(status=200, content_type="text/html; charset=utf-8",
+                        headers={"cache-control": "no-store", "referrer-policy": "no-referrer"},
+                        body=f'<html><head><meta http-equiv="refresh" content="0;url={destination}"></head>'
+                             '<body>正在打开专用窗口…</body></html>')
+                    return
             await route.fallback()
         except Exception:
             self.guard_errors.setdefault(session_id, set()).add("REQUEST_GUARD_UNAVAILABLE")
