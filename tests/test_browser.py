@@ -156,8 +156,9 @@ async def test_real_browser_synthetic_search_pagination_and_identity(app):
 
 
 @pytest.mark.browser
-@pytest.mark.parametrize("popup_path", ["/download-window", "/fixture.pdf"])
-async def test_pdf_download_in_new_window_is_registered_and_windows_are_closed(app, tmp_path, popup_path):
+@pytest.mark.parametrize(("popup_path", "delayed_controls"), [
+    ("/download-window", False), ("/fixture.pdf", False), ("/fixture.pdf", True)])
+async def test_pdf_download_in_new_window_is_registered_and_windows_are_closed(app, tmp_path, popup_path, delayed_controls):
     pdf = tmp_path / "fixture.pdf"
     make_pdf(pdf)
     profile = Institution(institution_id="download_fixture", display_names=["Fixture University"],
@@ -197,8 +198,10 @@ async def test_pdf_download_in_new_window_is_registered_and_windows_are_closed(a
                 popup_handler = "onclick=\"window.open(this.href,'_blank');return false\"" if popup_path == "/download-window" else ""
                 await route.fulfill(status=200, content_type="text/html", body=f'''
                     <div class="institution">Fixture University</div><div class="wx-tit"><h1>Fixture download</h1></div>
+                    <div id="download-controls" {'hidden' if delayed_controls else ''}>
                     <a id="pdfDown" target="_blank" href="{popup_path}" {popup_handler}>PDF下载</a>
-                    <a id="pdfDown" hidden>PDF下载</a>''')
+                    <a id="pdfDown" hidden>PDF下载</a></div>
+                    <script>setTimeout(()=>document.querySelector('#download-controls').hidden=false,800)</script>''')
 
         await context.route("**/*", serve)
         await context.route("**/*", lambda route: app.access.route_request(sid, profile, route))

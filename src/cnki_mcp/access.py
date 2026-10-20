@@ -316,6 +316,24 @@ class BrowserAccess:
                     continue
                 item["kind"] = "provider"
                 item["path"] = url.path[:180]
+                if url.path.rstrip("/").casefold() == "/kcms2/article/abstract":
+                    item["download_controls"] = []
+                    controls = page.locator('a:has-text("PDF"), a:has-text("CAJ"), '
+                                            'button:has-text("PDF"), button:has-text("CAJ")')
+                    for index in range(min(await controls.count(), 24)):
+                        control = controls.nth(index)
+                        shape = await control.evaluate("""element => ({
+                            tag: element.tagName.toLowerCase(), id: element.id,
+                            classes: typeof element.className === 'string' ? element.className : '',
+                            label: (element.innerText || '').slice(0,120), href: element.href || ''
+                        })""")
+                        destination = urlsplit(shape.pop("href"))
+                        is_web = destination.scheme in {"http", "https"}
+                        shape["target_shape"] = {"host": destination.hostname if is_web else None,
+                            "path": destination.path[:180] if is_web else "non_http_control",
+                            "query_keys": [key for key, _ in parse_qsl(destination.query)] if is_web else []}
+                        shape["visible"] = await control.is_visible()
+                        item["download_controls"].append(shape)
                 configured_search = urlsplit(profile.search_url)
                 search_base = configured_search.path.rstrip("/")
                 if url.hostname == configured_search.hostname and (

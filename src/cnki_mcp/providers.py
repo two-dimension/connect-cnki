@@ -346,8 +346,16 @@ class CNKIProvider:
                     if await denied.is_visible():
                         raise AppError("RESOURCE_NOT_SUBSCRIBED", "此资源不在当前订购范围内。")
             available = page.locator(selectors.resource_available) if selectors.resource_available else None
-            require(available and await available.count() and await available.first.is_visible(),
-                    "ACCESS_UNDETERMINED", "没有可靠的单篇全文访问证据。", "请使用正常网页人工核验。")
+            require(available is not None, "ACCESS_UNDETERMINED", "没有已配置的单篇全文访问证据。",
+                    "请使用正常网页人工核验。")
+            try:
+                # Download controls hydrate after the title on current detail pages.
+                # A visible title alone does not mean the entitlement widget is ready.
+                await available.first.wait_for(state="visible", timeout=self.settings.network_timeout_ms)
+            except Error:
+                await self.guard_page(page, profile, session_id)
+                raise AppError("ACCESS_UNDETERMINED", "没有可靠的单篇全文访问证据。",
+                               "请使用正常网页人工核验。") from None
             control = page.locator(selectors.pdf_download)
             require(await control.count() == 1 and await control.is_visible() and await control.is_enabled(),
                     "SOURCE_LAYOUT_CHANGED", "单篇 PDF 下载控件缺失或不唯一。")
