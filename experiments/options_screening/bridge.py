@@ -33,7 +33,11 @@ async def run(args):
     runtime.mkdir(parents=True, exist_ok=True)
     # Dedicated experiment library; production code and user's existing projects stay untouched.
     trial_config = runtime / "config.json"
-    trial_config.write_text(settings.model_copy(update={"data_dir": runtime / "library"}).model_dump_json(indent=2), encoding="utf-8")
+    overrides = {"data_dir": runtime / "library"}
+    if args.max_pdf_pages is not None:
+        overrides["max_pdf_pages"] = args.max_pdf_pages
+    trial_settings = Settings.model_validate({**settings.model_dump(), **overrides})
+    trial_config.write_text(trial_settings.model_dump_json(indent=2), encoding="utf-8")
     params = StdioServerParameters(command=sys.executable,
         args=["-m", "cnki_mcp", "--config", str(trial_config)], cwd=str(config.parent),
         env={**os.environ, "PYTHONUTF8": "1"})
@@ -86,7 +90,9 @@ async def run(args):
                         envelope = {"tool": tool, "at": now(), "elapsed_ms": round((time.perf_counter()-started)*1000, 3),
                                     "arguments": command.get("arguments", {}), "result": data, "protocol_error": result.isError,
                                     "request_file": queue_file.name if queue_file else None}
-                        file.write_text(json.dumps(envelope, ensure_ascii=False, indent=2), encoding="utf-8")
+                        temporary = file.with_suffix(".json.writing")
+                        temporary.write_text(json.dumps(envelope, ensure_ascii=False, indent=2), encoding="utf-8")
+                        temporary.replace(file)
                         summary = {"response": str(file), "tool": tool, "status": data.get("status") if data else "protocol_error"}
                         if data:
                             if data.get("error"):
@@ -111,6 +117,7 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=Path, default=Path("config.local.json"))
     parser.add_argument("--runtime", type=Path, required=True)
     parser.add_argument("--queue-dir", type=Path, help="Durable file queue for a hidden background client; no browser credentials persisted.")
+    parser.add_argument("--max-pdf-pages", type=int, help="Explicit trial-only parser resource limit; validated by Settings.")
     arguments = parser.parse_args()
     try:
         asyncio.run(run(arguments))
