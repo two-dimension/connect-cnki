@@ -174,9 +174,10 @@ wheels = [
 
 [[package]]
 name = "cnki-literature-mcp"
-version = "0.2.0"
+version = "0.2.1"
 source = { editable = "." }
 dependencies = [
+    { name = "anyio" },
     { name = "beautifulsoup4" },
     { name = "bibtexparser" },
     { name = "mcp" },
@@ -196,6 +197,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", specifier = ">=4.5,<5" },
     { name = "beautifulsoup4", specifier = ">=4.12,<5" },
     { name = "bibtexparser", specifier = ">=1.4,<2" },
     { name = "mcp", specifier = ">=1.20,<2" },

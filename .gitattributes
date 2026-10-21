@@ -8,3 +8,6 @@
 *.xml text eol=lf
 *.cjs text eol=lf
 *.docx binary
+
+# Preserve the external export's recorded bytes, including any source line endings.
+tests/fixtures/crossref-shannon.ris -text

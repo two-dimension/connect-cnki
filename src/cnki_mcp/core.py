@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 MIGRATIONS = {
     1: (
         "CREATE TABLE records (id TEXT PRIMARY KEY, kind TEXT NOT NULL, body TEXT NOT NULL, "
@@ -34,6 +34,13 @@ MIGRATIONS = {
         "dependent_id TEXT NOT NULL REFERENCES records(id), source_id TEXT NOT NULL REFERENCES records(id), "
         "relation TEXT NOT NULL, PRIMARY KEY(dependent_id,source_id,relation))",
         "CREATE INDEX review_dependency_source ON review_dependencies(project_id,source_id)",
+    ),
+    4: (
+        "CREATE INDEX records_version ON records(kind,json_extract(body,'$.version_id'))",
+        "CREATE INDEX records_parse ON records(kind,json_extract(body,'$.parse_artifact_id'))",
+        "CREATE INDEX records_asset ON records(kind,json_extract(body,'$.asset_id'))",
+        "CREATE INDEX records_idempotency ON records(kind,json_extract(body,'$.idempotency_key'))",
+        "ALTER TABLE audit ADD COLUMN diagnostic_code TEXT",
     ),
 }
 
@@ -61,6 +68,35 @@ class AppError(Exception):
 def require(condition: Any, code: str, message: str, action: str = "") -> None:
     if not condition:
         raise AppError(code, message, action)
+
+
+def classify_error(error: Exception) -> AppError:
+    from pydantic import ValidationError
+
+    if isinstance(error, AppError):
+        return error
+    if isinstance(error, (ValidationError, json.JSONDecodeError, UnicodeError)):
+        return AppError("INVALID_ARGUMENT", "参数或文件内容不符合要求。", "检查输入格式与编码。")
+    if isinstance(error, PermissionError):
+        return AppError("FILE_ACCESS_DENIED", "没有文件读写权限。", "检查目录和文件访问权限后重试。")
+    if isinstance(error, FileNotFoundError):
+        return AppError("FILE_NOT_FOUND", "所需文件不存在。", "检查文件和依赖安装路径。")
+    if isinstance(error, TimeoutError):
+        return AppError("OPERATION_TIMEOUT", "操作超时。", "稍后重试或检查超时配置。", retryable=True)
+    if isinstance(error, OSError):
+        return AppError("FILE_IO_ERROR", "文件读写失败。", "检查磁盘空间和文件可用性。", retryable=True)
+    if isinstance(error, ImportError):
+        return AppError("DEPENDENCY_UNAVAILABLE", "所需依赖未安装。", "按安装说明修复本地依赖。")
+    return AppError("INTERNAL_ERROR", "内部处理失败，请根据请求或任务标识检查本地诊断。")
+
+
+def diagnostic_category(error: Exception) -> str:
+    allowed = {"AppError", "ValidationError", "JSONDecodeError", "UnicodeDecodeError", "PermissionError",
+               "FileNotFoundError", "OSError", "TimeoutError", "ModuleNotFoundError", "ImportError",
+               "KeyError", "TypeError", "ValueError", "RuntimeError", "PdfReadError", "PdfStreamError",
+               "DependencyError", "FileNotDecryptedError", "WrongPasswordError", "AttributeError", "OtherPdfError", "LimitReachedError"}
+    category = error.diagnostic_code if isinstance(error, AppError) and error.diagnostic_code else type(error).__name__
+    return category if category in allowed else "OtherError"
 
 
 class Store:
@@ -143,12 +179,14 @@ class Store:
         snapshot.with_suffix(".json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def audit(self, request_id: str, operation: str, status: str, error_code: str | None,
-              elapsed_ms: float, *, stage: str = "tool", job_id: str | None = None, source_kind: str = "local"):
+              elapsed_ms: float, *, stage: str = "tool", job_id: str | None = None, source_kind: str = "local",
+              diagnostic_code: str | None = None):
         # Fixed field set: no arguments, query strings, exceptions, credentials or text bodies.
         self.db.execute(
-            "INSERT INTO audit (request_id,operation,status,error_code,at,elapsed_ms,stage,job_id,source_kind) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
-            (request_id, operation, status, error_code, now(), max(0, round(elapsed_ms, 3)), stage, job_id, source_kind),
+            "INSERT INTO audit (request_id,operation,status,error_code,at,elapsed_ms,stage,job_id,source_kind,diagnostic_code) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (request_id, operation, status, error_code, now(), max(0, round(elapsed_ms, 3)), stage, job_id,
+             source_kind, diagnostic_code),
         )
 
     def close(self):
@@ -179,6 +217,22 @@ class Store:
         return [json.loads(row[0]) for row in self.db.execute(
             "SELECT body FROM records WHERE kind=? ORDER BY created_at,rowid", (kind,)
         )]
+
+    def find(self, kind: str, **filters) -> list[dict]:
+        allowed = {"version_id", "parse_artifact_id", "asset_id", "idempotency_key", "project_id"}
+        if not filters or not set(filters) <= allowed:
+            raise ValueError("Unsupported record filter")
+        clauses = [f"json_extract(body,'$.{field}')=?" for field in filters]
+        return [json.loads(row[0]) for row in self.db.execute(
+            "SELECT body FROM records WHERE kind=? AND " + " AND ".join(clauses) + " ORDER BY created_at,rowid",
+            (kind, *filters.values()))]
+
+    def paper_count(self, project_id: str) -> int:
+        return self.db.execute("SELECT count(*) FROM project_papers WHERE project_id=?", (project_id,)).fetchone()[0]
+
+    def has_paper(self, project_id: str, version_id: str) -> bool:
+        return self.db.execute("SELECT 1 FROM project_papers WHERE project_id=? AND version_id=?",
+                               (project_id, version_id)).fetchone() is not None
 
     def link(self, project_id: str, version_id: str) -> None:
         self.db.execute("INSERT OR IGNORE INTO project_papers VALUES (?,?)", (project_id, version_id))

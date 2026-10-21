@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from .core import Store, now, require
+from .core import AppError, Store, now, require
 from .models import DimensionRating, ScreeningRules
-from .policy import protected
+from .policy import protected_all
 
 TEMPLATES = {
     "economics": ["data_source", "sample_selection", "variables", "identification", "endogeneity", "robustness"],
@@ -18,6 +18,41 @@ TEMPLATES = {
 class Screening:
     def __init__(self, store: Store):
         self.store = store
+
+    def requirements(self, decision: dict) -> tuple[list[dict], list[str]]:
+        """Resolve historical IDs again: source permissions can change after screening."""
+        requirements, missing = [], []
+        for dimension in decision.get("dimensions", []):
+            ids = dimension.get("evidence_ids", [])
+            if not ids and (dimension.get("reason") or dimension.get("score") is not None
+                            or not dimension.get("applicable", True)):
+                missing.append(dimension["dimension"])
+            for evidence_id in ids:
+                try:
+                    evidence = self.store.get(evidence_id, "evidence")
+                    require(evidence["version_id"] == decision["version_id"], "EVIDENCE_MISMATCH", "证据版本不符。")
+                    asset = self.store.get(evidence["asset_id"], "asset")
+                    require(asset["version_id"] == evidence["version_id"], "EVIDENCE_MISMATCH", "证据文件版本不符。")
+                    requirements.extend({"content_class": "fulltext", "rights": rights}
+                                        for rights in (evidence["rights"], asset["rights"]))
+                except (AppError, KeyError):
+                    missing.append(evidence_id)
+        if missing:
+            requirements.append({"content_class": "fulltext", "rights": {}})
+        return requirements, sorted(set(missing))
+
+    def present(self, decision: dict) -> dict:
+        _, missing = self.requirements(decision)
+        dimensions = [protected_all(d, self.requirements({**decision, "dimensions": [d]})[0])
+                      for d in decision.get("dimensions", [])]
+        return {**decision, "dimensions": dimensions,
+                "dependency_status": "missing" if missing else "resolved", "missing_dependencies": missing}
+
+    def protect_override(self, decision: dict, reason: str) -> dict:
+        requirements, _ = self.requirements(decision)
+        paper = self.store.get(decision["version_id"], "version")
+        requirements.append({"content_class": "review", "rights": paper["rights"]})
+        return protected_all(reason, requirements)
 
     def run(self, paper: dict, policy: dict, stage: str, ratings: list[DimensionRating]) -> dict:
         rules = ScreeningRules.model_validate(policy["rules"])
@@ -86,9 +121,12 @@ class Screening:
         decision = self.store.put("decision", {
             "version_id": paper["id"], "policy_id": policy["id"], "stage": stage,
             "result": result, "reasons": reasons, "missing": missing, "dimensions": dimensions,
+            "evidence_dependencies": [{"dimension": d["dimension"], "evidence_id": evidence_id,
+                "rights_source_id": self.store.get(evidence_id, "evidence")["asset_id"]}
+                for d in dimensions for evidence_id in d["evidence_ids"]],
             "evidence_coverage": coverage, "average_score": average, "at": now(),
             "assessment_source": "agent_supplied_evidence_ratings" if stage == "fulltext" else "deterministic_metadata_rules",
             "dimensions_summary": {"relevance": "not_assessed", "method": "evaluated" if dimensions else "unknown",
                                    "impact": "citation_signal_only", "evidence_completeness": coverage},
         })
-        return {**decision, "dimensions": protected(dimensions, "fulltext", paper["rights"])}
+        return self.present(decision)

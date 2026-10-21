@@ -1,0 +1,27 @@
+{
+  "baseline_commit": "aab98eeb5d32d06ab732b19ee8a6dbc6b27e543e",
+  "baseline": {
+    "service_version": "0.2.0",
+    "schema": 3,
+    "fixture_created": true
+  },
+  "upgraded": {
+    "service_version": "0.2.1",
+    "schema": 4,
+    "new_parse_created": true,
+    "old_pdf_evidence_snapshot_review_preserved": true,
+    "same_request_reused": true,
+    "backup_verified": true,
+    "pipeline_version": "text-pdf-page-limits-2026-10-21.2"
+  },
+  "pipeline_only_probe": {
+    "service_version": "0.2.1",
+    "schema": 4,
+    "new_parse_created": true,
+    "old_pdf_evidence_snapshot_review_preserved": true,
+    "same_request_reused": true,
+    "backup_verified": true,
+    "pipeline_version": "text-pdf-page-limits-2026-10-21.2.identity-probe"
+  },
+  "scope": "installed_wheels_isolated_synthetic_library_no_network_or_real_cnki"
+}

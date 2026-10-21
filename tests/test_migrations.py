@@ -127,3 +127,38 @@ def test_schema_two_review_migration_and_failed_three_rollback(tmp_path, monkeyp
     assert store.db.execute("SELECT count(*) FROM review_dependencies").fetchone()[0] == 0
     assert store.papers("project_legacy")[0]["id"] == "version_legacy"
     store.close()
+
+
+def test_schema_three_indexes_rollback_and_equivalent_order(tmp_path, monkeypatch):
+    root = tmp_path / "v3"
+    database = legacy_database(root)
+    with sqlite3.connect(database) as connection:
+        for target in (2, 3):
+            for statement in core.MIGRATIONS[target]:
+                connection.execute(statement)
+        connection.execute("PRAGMA user_version=3")
+    with monkeypatch.context() as patch:
+        patch.setitem(core.MIGRATIONS, 4, (*core.MIGRATIONS[4], "INVALID MIGRATION SQL"))
+        with pytest.raises(sqlite3.DatabaseError):
+            Store(root)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert not connection.execute("SELECT 1 FROM sqlite_master WHERE name='records_version'").fetchone()
+        assert "diagnostic_code" not in {row[1] for row in connection.execute("PRAGMA table_info(audit)")}
+    store = Store(root)
+    try:
+        with store.transaction():
+            for index in range(20):
+                store.put("evidence", {"version_id": f"version_{index % 3}", "parse_artifact_id": f"parse_{index % 4}",
+                    "asset_id": f"asset_{index % 5}", "payload": index})
+        for field, value in (("version_id", "version_1"), ("parse_artifact_id", "parse_2"), ("asset_id", "asset_3")):
+            assert store.find("evidence", **{field: value}) == [e for e in store.all("evidence") if e[field] == value]
+            query = f"EXPLAIN QUERY PLAN SELECT body FROM records WHERE kind=? AND json_extract(body,'$.{field}')=?"
+            plan = str([tuple(r) for r in store.db.execute(query, ("evidence", value))])
+            index = {"version_id": "records_version", "parse_artifact_id": "records_parse", "asset_id": "records_asset"}[field]
+            assert f"USING INDEX {index}" in plan
+        assert store.papers("project_legacy")[0]["id"] == "version_legacy"
+        backups = [json.loads(p.read_text()) for p in (root / "backups").glob("*.json")]
+        assert all(b["from_version"] == 3 for b in backups)
+    finally:
+        store.close()

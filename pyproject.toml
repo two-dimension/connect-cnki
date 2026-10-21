@@ -4,11 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cnki-literature-mcp"
-version = "0.2.0"
+version = "0.2.1"
 description = "Local, permission-aware CNKI literature research MCP"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [
+  "anyio>=4.5,<5",
   "mcp>=1.20,<2",
   "pydantic>=2.10,<3",
   "playwright>=1.50,<2",

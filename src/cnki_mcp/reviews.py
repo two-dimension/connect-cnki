@@ -23,8 +23,8 @@ class Reviews:
         remaining_chars = self.documents.settings.max_read_chars
         evidence_truncated = False
         for paper in papers:
-            parses = [p for p in self.store.all("parse") if p["version_id"] == paper["id"]]
-            spans = [e for e in self.store.all("evidence") if e["version_id"] == paper["id"]]
+            parses = self.store.find("parse", version_id=paper["id"])
+            spans = self.store.find("evidence", version_id=paper["id"])
             level = "fulltext" if spans else "abstract_only" if paper.get("abstract") else "metadata_only"
             selected_spans = []
             for span in spans[:3]:

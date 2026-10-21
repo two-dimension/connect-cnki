@@ -1,0 +1,15 @@
+{
+  "at": "2026-10-21T09:32:58.365252+00:00",
+  "transport": "official Python MCP SDK stdio subprocess",
+  "service_version": "0.2.1",
+  "tool_count": 39,
+  "prompt_count": 3,
+  "resource_entries": 3,
+  "xmu_profile_read": true,
+  "schemas": "all registered tools include input and output schemas",
+  "v2_opt_in_plan_snapshot_card_job_progress_history_export": "passed",
+  "default_export_excludes_review": true,
+  "main_data_directory_used_by_server": false,
+  "network_calls": 0,
+  "scientific_quality_certified": false
+}

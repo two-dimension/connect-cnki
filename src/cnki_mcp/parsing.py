@@ -4,22 +4,55 @@ import asyncio
 import hashlib
 import json
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
+from anyio import CancelScope
 from pypdf import __version__ as pypdf_version
 
+from . import parsing_identity
 from .config import Settings
 from .core import AppError, Store, now, require, uid
 from .pdf_validation import inspect_pdf
 from .policy import PolicyGate, protected
+from .processes import run_process
 
 
 class Documents:
     def __init__(self, settings: Settings, store: Store, gate: PolicyGate):
         self.settings, self.store, self.gate = settings, store, gate
 
-    def register(self, version_id: str, file: Path, rights: dict, source: str) -> dict:
+    async def register_async(self, version_id: str, file: Path, rights: dict, source: str) -> dict:
+        self.store.get(version_id, "version")
+        require(8 <= file.stat().st_size <= self.settings.max_file_mb * 1024 * 1024,
+                "FILE_VALIDATION_FAILED", "文件大小不合法或超限。")
+        staged = self.store.root / "tmp" / uid("inspection")
+        copy = asyncio.create_task(asyncio.to_thread(shutil.copyfile, file, staged))
+        try:
+            # The copy thread has no Store access. Finish it before cleaning up on cancellation.
+            try:
+                await asyncio.shield(copy)
+            except asyncio.CancelledError:
+                with CancelScope(shield=True):
+                    await copy
+                raise
+            inspection = None
+            with staged.open("rb") as stream:
+                signature = stream.read(16)
+            if signature.startswith(b"%PDF-"):
+                code, output = await run_process(
+                    [sys.executable, "-m", "cnki_mcp.pdf_inspector", str(staged), str(self.settings.max_pdf_pages)],
+                    timeout=self.settings.inspect_timeout_seconds, timeout_code="PDF_INSPECTION_TIMEOUT")
+                require(code == 0, "FILE_VALIDATION_FAILED", "PDF 检查进程失败。")
+                inspection = json.loads(output)
+                if "error" in inspection:
+                    raise AppError(**inspection["error"])
+            return self.register(version_id, staged, rights, source, inspection=inspection)
+        finally:
+            staged.unlink(missing_ok=True)
+
+    def register(self, version_id: str, file: Path, rights: dict, source: str, *, inspection: dict | None = None) -> dict:
         self.store.get(version_id, "version")
         size = file.stat().st_size
         require(8 <= size <= self.settings.max_file_mb * 1024 * 1024,
@@ -34,9 +67,15 @@ class Documents:
         pdf_encryption = None
         if kind == "pdf":
             try:
-                reader, pages, validation, pdf_warnings = inspect_pdf(file, self.settings.max_pdf_pages)
-                pdf_encryption = "default_reader_access" if reader.is_encrypted else "none"
+                if inspection is None:
+                    reader, pages, validation, pdf_warnings = inspect_pdf(file, self.settings.max_pdf_pages)
+                    pdf_encryption = "default_reader_access" if reader.is_encrypted else "none"
+                else:
+                    pages, validation, pdf_warnings, pdf_encryption = (
+                        inspection[k] for k in ("pages", "validation", "warnings", "encryption"))
             except AppError:
+                raise
+            except (OSError, ImportError):
                 raise
             except Exception as error:
                 category = type(error).__name__
@@ -57,10 +96,13 @@ class Documents:
                         "ASSET_INTEGRITY_FAILED", "已有资产哈希不符。")
         else:
             temporary = self.store.root / "tmp" / uid("asset")
-            shutil.copyfile(file, temporary)
-            temporary.replace(target)
-        for asset in self.store.all("asset"):
-            if asset["version_id"] == version_id and asset["sha256"] == sha and asset["rights"] == rights:
+            try:
+                shutil.copyfile(file, temporary)
+                temporary.replace(target)
+            finally:
+                temporary.unlink(missing_ok=True)
+        for asset in self.store.find("asset", version_id=version_id):
+            if asset["sha256"] == sha and asset["rights"] == rights:
                 return self.present_asset(asset)
         asset = self.store.put("asset", {
             "version_id": version_id, "sha256": sha, "format": kind,
@@ -87,25 +129,52 @@ class Documents:
         require(asset["format"] == "pdf", "PARSER_NOT_SUPPORTED", "CAJ 暂不解析，请提供合法 PDF。")
         profile = job["arguments"]["parser_profile"]
         require(profile == "text_pdf", "CAPABILITY_UNAVAILABLE", "OCR/MinerU 尚未启用，请使用 text_pdf 或人工处理。")
+        require(job["arguments"].get("pipeline_version", parsing_identity.PIPELINE_VERSION) == parsing_identity.PIPELINE_VERSION,
+                "PARSER_VERSION_CHANGED", "解析流程已更新，请重新提交 parse_fulltext 生成新任务。")
         parse_id = uid("parse")
         output = self.store.root / "tmp" / f"{parse_id}.json"
         source = self.store.root / asset["relative_path"]
         with source.open("rb") as stream:
             require(hashlib.file_digest(stream, "sha256").hexdigest() == asset["sha256"],
                     "ASSET_INTEGRITY_FAILED", "原始文件已被修改。")
-        process = await asyncio.create_subprocess_exec(
+        spawn = asyncio.create_task(asyncio.create_subprocess_exec(
             sys.executable, "-m", "cnki_mcp.pdf_worker", str(source), str(output), str(self.settings.max_pdf_pages),
             "--report-page-failures",
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
-        )
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0))
+        try:
+            process = await asyncio.shield(spawn)
+        except asyncio.CancelledError:
+            with CancelScope(shield=True):
+                try:
+                    process = await spawn
+                except Exception:
+                    pass
+                else:
+                    if process.returncode is None:
+                        try:
+                            process.kill()
+                        except ProcessLookupError:
+                            pass
+                    await process.wait()
+            output.unlink(missing_ok=True)
+            raise
         try:
             await asyncio.wait_for(process.wait(), self.settings.parse_timeout_seconds)
-            require(process.returncode == 0 and output.exists(), "PARSING_FAILED", "PDF 解析失败或超限。")
-            result = json.loads(output.read_text(encoding="utf-8"))
+            result = json.loads(output.read_text(encoding="utf-8")) if output.exists() else {}
+            if process.returncode != 0 or not result:
+                raise AppError("PARSING_FAILED", "PDF 解析失败或超限。",
+                               diagnostic_code=result.get("error", {}).get("diagnostic_code", "OtherPdfError"))
+            require(result.get("pipeline_version") == parsing_identity.PIPELINE_VERSION,
+                    "PARSER_VERSION_CHANGED", "解析进程与服务的流程版本不一致，请重启服务。")
         except (TimeoutError, asyncio.CancelledError) as error:
-            if process.returncode is None:
-                process.kill()
-                await process.wait()
+            with CancelScope(shield=True):
+                if process.returncode is None:
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+                    await process.wait()
             if isinstance(error, asyncio.CancelledError):
                 raise
             raise AppError("PARSING_TIMEOUT", "解析超时，原文件已保留。", "检查文件后恢复任务。") from None
@@ -141,8 +210,7 @@ class Documents:
         manifest.write_text(json.dumps(artifact, ensure_ascii=False, indent=2), encoding="utf-8")
         return {"parse_artifact_id": parse_id, "asset_id": asset["id"], "sha256": asset["sha256"],
                 "quality": quality, "page_count": len(result["pages"]),
-                "reading_level": "fulltext" if any(e["text"].strip() for e in self.store.all("evidence")
-                                                     if e["parse_artifact_id"] == parse_id) else "metadata_only",
+                "reading_level": "fulltext" if any(e["text"].strip() for e in self.store.find("evidence", parse_artifact_id=parse_id)) else "metadata_only",
                 "pdf_validation": result["pdf_validation"],
                 "pipeline_version": result.get("pipeline_version", "legacy_text_pdf_v1"),
                 "extraction_failed_pages": failed_pages, "extraction_failures": extraction_failures,

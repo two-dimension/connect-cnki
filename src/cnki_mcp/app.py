@@ -10,14 +10,14 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, ValidationError
+from pydantic import Field
 from pypdf import __version__ as pypdf_version
 
-from . import __version__
+from . import __version__, parsing_identity
 from .access import BrowserAccess
-from .citations import export_manifest, parse_records, serialize
+from .citations import export_manifest, parse_records, serialize_async
 from .config import Mode, Settings, StrictModel
-from .core import AppError, Store, digest, normalize, now, require, uid
+from .core import AppError, Store, classify_error, diagnostic_category, digest, normalize, now, require, uid
 from .jobs import Jobs
 from .library import Library
 from .models import (
@@ -71,6 +71,7 @@ def endpoint(method):
     async def execute(self, *args, **kwargs):
         request_id = uid("request")
         started = time.perf_counter()
+        diagnostic = None
         try:
             data = await method(self, *args, **kwargs)
             self.store.db.commit()
@@ -85,10 +86,8 @@ def endpoint(method):
                 result["job_id"] = data["id"]
         except Exception as error:
             self.store.db.rollback()
-            if isinstance(error, (ValidationError, ValueError, KeyError, TypeError, OSError)):
-                error = AppError("INVALID_ARGUMENT", "参数或文件内容不符合要求，请检查输入和目录配置。")
-            if not isinstance(error, AppError):
-                error = AppError("INTERNAL_ERROR", "操作失败，诊断仅记录错误类别。")
+            diagnostic = diagnostic_category(error)
+            error = classify_error(error)
             result = {"status": "failed", "data": None, "warnings": [], "provenance": {}, "request_id": request_id,
                       "error": {"code": error.code, "message": error.message, "user_action": error.action,
                                 "retryable": error.retryable, "requires_user_action": bool(error.action),
@@ -98,7 +97,7 @@ def endpoint(method):
                          source_kind="cnki" if method.__name__ in {
                              "start_access_session", "verify_access_session", "search_papers", "acquire_fulltext",
                          } or (method.__name__ == "get_paper" and kwargs.get("refresh", len(args) > 1 and args[1]))
-                         else "local")
+                         else "local", diagnostic_code=diagnostic)
         self.store.db.commit()
         return result
     return execute
@@ -113,7 +112,7 @@ class Application:
         self.library = Library(self.store)
         self.access = BrowserAccess(settings, self.store)
         self.provider = CNKIProvider(settings, self.access, self.gate)
-        self.jobs = Jobs(self.store)
+        self.jobs = Jobs(self.store, settings.job_concurrency)
         self.documents = Documents(settings, self.store, self.gate)
         self.screening = Screening(self.store)
         self.reviews = Reviews(self.store, self.library, self.documents)
@@ -134,7 +133,8 @@ class Application:
         self.store.close()
 
     def project_paper(self, project_id: str, version_id: str) -> dict:
-        require(version_id in {p["id"] for p in self.store.papers(project_id)},
+        self.store.get(project_id, "project")
+        require(self.store.has_paper(project_id, version_id),
                 "PROJECT_MISMATCH", "文献不属于指定项目。")
         return self.store.get(version_id, "version")
 
@@ -175,7 +175,7 @@ class Application:
     async def list_projects(self) -> dict:
         """列出本地研究项目和候选数量，便于重启后恢复工作。"""
         return {"projects": [{**p, "review_assistance_enabled": p.get("review_assistance_enabled", False),
-                              "paper_count": len(self.store.papers(p["id"]))} for p in self.store.all("project")]}
+                              "paper_count": self.store.paper_count(p["id"])} for p in self.store.all("project")]}
 
     @endpoint
     async def list_papers(self, project_id: ID, offset: Annotated[int, Field(ge=0)] = 0,
@@ -200,9 +200,8 @@ class Application:
                               reason: Annotated[str, Field(min_length=1, max_length=2000)]) -> dict:
         """追加人工覆盖与理由，保留原筛选结果和历史覆盖记录。"""
         decision = self.store.get(decision_id, "decision")
-        paper = self.store.get(decision["version_id"], "version")
         override = self.store.put("override", {"decision_id": decision_id, "result": result, "reason": reason, "at": now()})
-        return {**override, "reason": protected(reason, "review", paper["rights"])}
+        return {**override, "reason": self.screening.protect_override(decision, reason)}
 
     @endpoint
     async def resolve_duplicate(self, duplicate_id: ID,
@@ -394,7 +393,7 @@ class Application:
             {"id": o["id"], "source": o["source"], "observed_at": o["observed_at"],
              "fields": {k: protected(v, "abstract", o["rights"]) if k == "abstract" else v
                         for k, v in o["fields"].items()}}
-            for o in self.store.all("observation") if o["version_id"] == version_id]}
+            for o in self.store.find("observation", version_id=version_id)]}
 
     @endpoint
     async def import_records(self, project_id: ID, records: list[PaperInput] | None = None, file_path: str | None = None,
@@ -405,12 +404,18 @@ class Application:
         require((records is not None) != (file_path is not None), "INVALID_ARGUMENT", "records 与 file_path 需且只能提供一项。")
         if file_path:
             file = self.settings.import_path(file_path)
-            records = parse_records(file.read_text(encoding="utf-8-sig"), format)
+            try:
+                records = parse_records(file.read_text(encoding="utf-8-sig"), format)
+            except (ValueError, KeyError, TypeError, IndexError):
+                raise AppError("INVALID_ARGUMENT", "题录文件内容格式无效。", "检查格式、字段和编码后重新导入。") from None
         require(records and len(records) <= 100, "INVALID_ARGUMENT", "每次导入需为 1 至 100 条题录。")
-        require(len(self.store.papers(project_id)) + len(records) <= project["budget"],
-                "BUDGET_EXCEEDED", "导入可能超出项目候选预算。")
         access = {"origin": "import", **(rights or ImportRights()).model_dump()}
-        return {"imported": [self.library.ingest(project_id, record, access, "user_import") for record in records]}
+        # No await between ingestion and the final count. The endpoint rolls back the
+        # entire batch, including observations and duplicate candidates, on overflow.
+        imported = [self.library.ingest(project_id, record, access, "user_import") for record in records]
+        require(self.store.paper_count(project_id) <= project["budget"],
+                "BUDGET_EXCEEDED", "新增文献超出项目候选预算，整批导入已回滚。")
+        return {"imported": imported}
 
     @endpoint
     async def screen_papers(self, version_ids: IDS, policy_id: ID,
@@ -439,8 +444,8 @@ class Application:
         paper = self.project_paper(project["id"], arguments["version_id"])
         self.gate.check(project["institution_id"], "fulltext_download", paper["paper_type"])
         rights = {"origin": "institution", "institution_id": project["institution_id"], "resource_type": paper["paper_type"]}
-        for asset in self.store.all("asset"):
-            if asset["version_id"] == paper["id"] and asset["rights"] == rights and asset["validation"] in {
+        for asset in self.store.find("asset", version_id=paper["id"]):
+            if asset["rights"] == rights and asset["validation"] in {
                 "pdf_structural", "pdf_structural_review_required",
             }:
                 cached_file = self.store.root / asset["relative_path"]
@@ -456,7 +461,7 @@ class Application:
         try:
             async with self.online(arguments["session_id"], project) as (context, profile):
                 await self.provider.download(context, profile, arguments["session_id"], paper, temporary)
-                asset = self.documents.register(paper["id"], temporary, rights, "cnki_download")
+                asset = await self.documents.register_async(paper["id"], temporary, rights, "cnki_download")
                 self.store.db.commit()
                 return {**asset, **({"_job_state": "partially_succeeded"}
                                    if asset["validation"] == "pdf_structural_review_required" else {})}
@@ -481,8 +486,8 @@ class Application:
     @endpoint
     async def import_fulltext(self, version_id: ID, file_path: str, rights: ImportRights) -> dict:
         """从允许目录导入合法取得 PDF/CAJ，校验结构与哈希并关联发表版本。"""
-        return self.documents.register(version_id, self.settings.import_path(file_path),
-                                       {"origin": "import", **rights.model_dump()}, "user_import")
+        return await self.documents.register_async(version_id, self.settings.import_path(file_path),
+                                                   {"origin": "import", **rights.model_dump()}, "user_import")
 
     @endpoint
     async def parse_fulltext(self, asset_id: ID, parser_profile: Literal["text_pdf", "ocr", "mineru"] = "text_pdf") -> dict:
@@ -491,8 +496,10 @@ class Application:
         self.documents.parse_allowed(asset)
         require(parser_profile == "text_pdf", "CAPABILITY_UNAVAILABLE", "OCR/MinerU 尚未启用。")
         return self.jobs.submit("parse_fulltext", {"asset_id": asset_id, "parser_profile": parser_profile,
-                                "parser_version": pypdf_version, "config_digest": self.config_digest},
-                                digest(["parse", asset_id, parser_profile, pypdf_version, self.config_digest]))
+                                "parser_version": pypdf_version, "pipeline_version": parsing_identity.PIPELINE_VERSION,
+                                "config_digest": self.config_digest},
+                                digest(["parse", asset_id, parser_profile, pypdf_version,
+                                        parsing_identity.PIPELINE_VERSION, self.config_digest]))
 
     def selected_parse(self, version_id: str, asset_id: str | None, parse_artifact_id: str | None) -> dict:
         if parse_artifact_id:
@@ -500,11 +507,10 @@ class Application:
             require(artifact["version_id"] == version_id and (not asset_id or artifact["asset_id"] == asset_id),
                     "EVIDENCE_MISMATCH", "解析产物、文件与版本不一致。")
             return artifact
-        selections = [s for s in self.store.all("selection") if s["version_id"] == version_id]
+        selections = self.store.find("selection", version_id=version_id)
         if selections and not asset_id:
             return self.store.get(selections[0]["parse_artifact_id"], "parse")
-        options = [p for p in self.store.all("parse") if p["version_id"] == version_id
-                   and (not asset_id or p["asset_id"] == asset_id)]
+        options = [p for p in self.store.find("parse", version_id=version_id) if not asset_id or p["asset_id"] == asset_id]
         require(options, "FULLTEXT_NOT_PARSED", "没有可用全文解析，请先导入并解析文件。")
         artifact = options[0]
         if not selections:
@@ -526,25 +532,10 @@ class Application:
                     (not parse_artifact_id or parse_artifact_id == item["parse_artifact_id"]),
                     "EVIDENCE_MISMATCH", "显式文件或解析标识与语料快照不一致。")
             return self.review_evidence.read(project_id, snapshot["id"], version_id, pages, section_name, evidence_offset)
-        require(section_name is None and evidence_offset == 0, "INVALID_ARGUMENT", "章节和继续读取参数需项目快照上下文。")
+        require(section_name is None, "INVALID_ARGUMENT", "章节阅读需项目快照上下文。")
         artifact = self.selected_parse(version_id, asset_id, parse_artifact_id)
-        pages = pages or [1]
-        require(len(pages) <= 20 and all(1 <= p <= artifact["page_count"] for p in pages),
-                "INVALID_ARGUMENT", "PDF 页序号超范围或请求页数过多。")
-        spans = [e for e in self.store.all("evidence") if e["parse_artifact_id"] == artifact["id"] and e["pdf_page"] in pages]
-        used, selected = 0, []
-        for span in spans:
-            if used + len(span["text"]) > self.settings.max_read_chars:
-                break
-            selected.append(self.documents.span(span))
-            used += len(span["text"])
-        return {"version_id": version_id, "asset_id": artifact["asset_id"], "sha256": artifact["sha256"],
-                "parse_artifact_id": artifact["id"], "quality": artifact["quality"], "evidence": selected,
-                "truncated": len(selected) < len(spans), "reading_level": "fulltext" if selected else "metadata_only",
-                "unavailable_pdf_pages": sorted(set(pages).intersection(artifact.get("extraction_failed_pages", []))),
-                "needs_ocr_or_manual_review": bool(set(pages).intersection(artifact["scanned_pages"]))
-                                              or bool(set(pages).intersection(artifact.get("extraction_failed_pages", [])))
-                                              or artifact["quality"] in {"structure_review_required", "layout_review_required"}}
+        result, _ = self.review_evidence.read_artifact(artifact, pages, evidence_offset)
+        return result
 
     @endpoint
     async def search_evidence(self, project_id: ID, query: Annotated[str, Field(min_length=1, max_length=500)],
@@ -561,17 +552,16 @@ class Application:
                 "CORPUS_SNAPSHOT_REQUIRED", "增强证据过滤需先创建快照。")
         ids = {p["id"] for p in self.store.papers(project_id)}
         exact, words, grams = self.review_evidence.terms(query, {})
-        selected_parses = {version_id: next((s["parse_artifact_id"] for s in self.store.all("selection")
-            if s["version_id"] == version_id), next((p["id"] for p in self.store.all("parse")
-            if p["version_id"] == version_id), None)) for version_id in ids}
+        selected_parses = {version_id: next((s["parse_artifact_id"] for s in self.store.find("selection", version_id=version_id)),
+            next((p["id"] for p in self.store.find("parse", version_id=version_id)), None)) for version_id in ids}
         scored = []
-        for evidence in self.store.all("evidence"):
-            if evidence["version_id"] not in ids or evidence["parse_artifact_id"] != selected_parses[evidence["version_id"]]:
-                continue
-            text = normalize(evidence["text"])
-            score = 10 * sum(text.count(word) for word in exact) + 3 * sum(text.count(word) for word in words) + sum(text.count(word) for word in grams)
-            if score:
-                scored.append((score, evidence))
+        for parse_id in selected_parses.values():
+            if parse_id:
+                for evidence in self.store.find("evidence", parse_artifact_id=parse_id):
+                    text = normalize(evidence["text"])
+                    score = 10 * sum(text.count(word) for word in exact) + 3 * sum(text.count(word) for word in words) + sum(text.count(word) for word in grams)
+                    if score:
+                        scored.append((score, evidence))
         scored.sort(key=lambda item: (-item[0], item[1]["id"]))
         results, used = [], 0
         for score, evidence in scored[:top_k]:
@@ -689,7 +679,8 @@ class Application:
         require(len(set(version_ids)) == len(version_ids), "INVALID_ARGUMENT", "导出版本列表存在重复。")
         papers = [self.store.get(i, "version") for i in version_ids]
         style_path = self.settings.csl_styles.get(style, Path(__file__).parent / "styles" / f"{style}.csl")
-        content, suffix = serialize(papers, format, style_path if format == "text" else None)
+        content, suffix = await serialize_async(papers, format, style_path if format == "text" else None,
+                                                self.settings.render_timeout_seconds)
         export_id = uid("export")
         output = self.store.root / "exports" / f"{export_id}.{suffix}"
         output.write_text(content, encoding="utf-8")
@@ -709,10 +700,7 @@ class Application:
         self.store.get(project_id, "project")
         papers = self.store.papers(project_id)
         ids = {p["id"] for p in papers}
-        decisions = [d for d in self.store.all("decision") if d["version_id"] in ids]
-        for decision in decisions:
-            decision["dimensions"] = protected(decision["dimensions"], "fulltext",
-                                                 self.store.get(decision["version_id"], "version")["rights"])
+        decisions = [self.screening.present(d) for d in self.store.all("decision") if d["version_id"] in ids]
         package = {"search_runs": [{k: v for k, v in q.items() if k != "cached"} for q in self.store.all("query")
                                    if q["snapshot"]["project_id"] == project_id],
                    "screening": decisions, "overrides": [],
@@ -725,12 +713,12 @@ class Application:
         decision_ids = {d["id"] for d in decisions}
         for override in self.store.all("override"):
             if override["decision_id"] in decision_ids:
-                paper = self.store.get(self.store.get(override["decision_id"], "decision")["version_id"], "version")
-                package["overrides"].append({**override, "reason": protected(override["reason"], "review", paper["rights"])})
+                decision = self.store.get(override["decision_id"], "decision")
+                package["overrides"].append({**override, "reason": self.screening.protect_override(decision, override["reason"])})
         if include_review:
             package["reviews"] = [{"id": r["id"], "body": self.reviews.protect_review(r["body"], r["rights"]),
                                    "validation": r["validation"]} for r in self.store.all("review") if r["project_id"] == project_id]
-            package.update(self.review_exporter.build(project_id, review_revision_ids, style))
+            package.update(await self.review_exporter.build(project_id, review_revision_ids, style))
         return self.review_exporter.write(package, format)
 
     @endpoint

@@ -16,10 +16,20 @@ from bibtexparser.bparser import BibTexParser
 
 from .core import AppError, now, require
 from .models import PaperInput
+from .processes import run_process
 
 TYPES = {"journal": "article-journal", "conference": "paper-conference", "thesis": "thesis", "book": "book",
          "preprint": "article", "correction": "article-journal", "retraction": "article-journal", "other": "article"}
 RIS_TYPES = {"journal": "JOUR", "conference": "CONF", "thesis": "THES", "book": "BOOK"}
+
+
+def ris_pages(start, end):
+    start, end = (str(value).strip() if value else "" for value in (start, end))
+    if not start:
+        return end or None
+    if not end or start == end or re.search(r"[-–—]", start):
+        return start
+    return f"{start}-{end}"
 
 
 def csl_record(paper: dict) -> dict:
@@ -118,7 +128,7 @@ def parse_records(text: str, format: str) -> list[PaperInput]:
             paper_type=next((k for k, code in RIS_TYPES.items() if code == v.get("type_of_reference")), "other"),
             source=v.get("journal_name") or v.get("secondary_title"), doi=v.get("doi"),
             volume=v.get("volume"), issue=v.get("number"), abstract=v.get("abstract"),
-            pages=v.get("start_page"), detail_url=v.get("url"),
+            pages=ris_pages(v.get("start_page"), v.get("end_page")), detail_url=v.get("url"),
         ) for v in values]
     if format == "bibtex":
         parser = BibTexParser(common_strings=True)
@@ -164,3 +174,30 @@ def render_review(papers: list[dict], citation_ids: list[str], style_path: Path)
         return rendered
     except (OSError, subprocess.TimeoutExpired, ValueError, KeyError):
         raise AppError("RENDERER_UNAVAILABLE", "统一引文渲染不可用或超时。") from None
+
+
+async def render_review_async(papers, citation_ids, style_path, timeout=30):
+    require(style_path and style_path.is_file(), "STYLE_UNAVAILABLE", "请求的 CSL 样式不可用。")
+    if not papers:
+        return {"text": "", "citations": [], "entry_ids": []}
+    node = shutil.which("node")
+    require(node, "RENDERER_UNAVAILABLE", "统一引文导出需要本地 Node.js 与 citeproc。", "运行安装脚本。")
+    payload = json.dumps({"items": [csl_record(p) for p in papers], "citations": citation_ids,
+                          "style": style_path.read_text(encoding="utf-8")}, ensure_ascii=False).encode("utf-8")
+    code, output = await run_process([node, str(Path(__file__).parent / "js" / "render.cjs")],
+                                    input_data=payload, timeout=timeout, timeout_code="RENDERER_TIMEOUT")
+    require(code == 0, "RENDERER_UNAVAILABLE", "本地 CSL 渲染失败。", "检查 Node.js 与 citeproc 安装。")
+    try:
+        rendered = json.loads(output)
+        require(isinstance(rendered["text"], str) and len(rendered["citations"]) == len(citation_ids),
+                "RENDERER_UNAVAILABLE", "正文引文渲染不完整。")
+        return rendered
+    except (ValueError, KeyError, TypeError):
+        raise AppError("RENDERER_UNAVAILABLE", "本地 CSL 渲染输出格式异常。") from None
+
+
+async def serialize_async(papers, format, style_path=None, timeout=30):
+    if format != "text":
+        return serialize(papers, format, style_path)
+    rendered = await render_review_async(papers, [], style_path, timeout)
+    return rendered["text"], "txt"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .core import Store, digest, now, require, uid
 from .library import Library
+from .models import PaperInput
 from .policy import PolicyGate, protected_all
 from .review_models import CorpusItemInput, EvidenceReference, PaperCardInput, ReviewPlanInput
 
@@ -136,7 +137,10 @@ class ReviewWorkspace:
         return protected_all(content, self.requirements(record))
 
     def present_item(self, item: dict):
-        clean = {k: v for k, v in item.items() if k not in {"bibliography", "metadata_rights", "fulltext_rights"}}
+        clean = {k: v for k, v in item.items() if k not in {"bibliography", "metadata_rights", "fulltext_rights", "field_sources"}}
+        if "field_sources" in item:
+            clean["field_sources"] = {field: {k: v for k, v in source.items() if k != "rights"}
+                                      for field, source in item["field_sources"].items()}
         clean["bibliography"] = self.library.present({**item["bibliography"], "rights": item["metadata_rights"]})
         return clean
 
@@ -173,12 +177,13 @@ class ReviewWorkspace:
         for item in items:
             require(item.version_id in papers, "PROJECT_MISMATCH", "快照文献不属于该项目。")
             paper = papers[item.version_id]
-            observations = [o for o in self.store.all("observation") if o["version_id"] == paper["id"]]
+            observations = self.store.find("observation", version_id=paper["id"])
+            require(observations, "MISSING_OBSERVATION", "该文献缺少可重放的题录观测，请重新导入。")
             observation = self.store.get(item.observation_id, "observation") if item.observation_id else observations[-1]
             require(observation["version_id"] == paper["id"], "EVIDENCE_MISMATCH", "题录观测不属于该发表版本。")
-            parses = [p for p in self.store.all("parse") if p["version_id"] == paper["id"]
-                      and (not item.asset_id or p["asset_id"] == item.asset_id)]
-            choices = [s for s in self.store.all("selection") if s["version_id"] == paper["id"]]
+            parses = [p for p in self.store.find("parse", version_id=paper["id"])
+                      if not item.asset_id or p["asset_id"] == item.asset_id]
+            choices = self.store.find("selection", version_id=paper["id"])
             artifact = self.store.get(item.parse_artifact_id, "parse") if item.parse_artifact_id else (
                 self.store.get(choices[0]["parse_artifact_id"], "parse") if choices and not item.asset_id else parses[0] if parses else None)
             asset = self.store.get(item.asset_id, "asset") if item.asset_id else (
@@ -190,7 +195,25 @@ class ReviewWorkspace:
                         and artifact["sha256"] == asset["sha256"], "EVIDENCE_MISMATCH", "文件与解析快照不一致。")
             bibliography = {**paper, **observation["fields"], "id": paper["id"], "work_id": paper["work_id"]}
             bibliography.pop("rights", None)
-            spans = [e for e in self.store.all("evidence") if artifact and e["parse_artifact_id"] == artifact["id"]]
+            field_sources = {field: {"record_id": observation["id"] if field in observation["fields"] else paper["id"],
+                "kind": "observation" if field in observation["fields"] else "version",
+                "rights": observation["rights"] if field in observation["fields"] else paper["rights"]}
+                for field in PaperInput.model_fields}
+            # Detail observations can contain only a title/abstract. Retain the
+            # existing metadata fallback with explicit provenance, but never
+            # relabel an inherited abstract with the selected observation's rights.
+            if "abstract" not in observation["fields"]:
+                bibliography.update(abstract=None, abstract_status="unknown")
+                field_sources["abstract"] = {"record_id": None, "kind": "unavailable", "rights": {}}
+                field_sources["abstract_status"] = {"record_id": None, "kind": "unavailable", "rights": {}}
+            spans = self.store.find("evidence", parse_artifact_id=artifact["id"]) if artifact else []
+            # Explicit nulls remain null; no cross-observation field completion.
+            fields = ("abstract", "volume", "issue", "pages", "source", "authors", "year", "doi")
+            regressions = [key for key in fields if not observation["fields"].get(key)
+                           and any(o["fields"].get(key) for o in observations if o["id"] != observation["id"])]
+            conflicts = [key for key in fields if observation["fields"].get(key) and any(
+                o["fields"].get(key) and o["fields"][key] != observation["fields"][key]
+                for o in observations if o["id"] != observation["id"])]
             level = "fulltext" if any(e["text"].strip() for e in spans) else "abstract_only" if bibliography.get("abstract") else "metadata_only"
             selected.append({"version_id": paper["id"], "work_id": paper["work_id"], "observation_id": observation["id"],
                 "bibliography": bibliography, "metadata_rights": observation["rights"],
@@ -198,6 +221,10 @@ class ReviewWorkspace:
                 "parse_artifact_id": artifact["id"] if artifact else None, "sha256": asset["sha256"] if asset else None,
                 "reading_level": level, "quality": artifact["quality"] if artifact else "not_parsed",
                 "extraction_failed_pages": artifact.get("extraction_failed_pages", []) if artifact else [],
+                "observation_selection": "explicit" if item.observation_id else "latest",
+                "field_sources": field_sources,
+                "field_regressions": regressions, "field_conflicts": conflicts,
+                "alternative_observation_ids": [o["id"] for o in observations if o["id"] != observation["id"]],
                 "role": item.role, "subquestions": item.subquestions})
             dependencies.extend([paper["id"], observation["id"], *([asset["id"]] if asset else []), *([artifact["id"]] if artifact else [])])
         record = self.revision(project_id, "corpus_snapshot", {"items": selected, "plan_id": dependencies[0] if plan_id else None},
@@ -206,7 +233,10 @@ class ReviewWorkspace:
         self.store.put("project", {**project, "review_snapshot_id": record["id"]})
         if old_id and old_id != record["id"]:
             self.invalidate(project_id, old_id, record["id"], "selected_snapshot_changed")
-        return self.present(record)
+        result = self.present(record)
+        if any(i["field_regressions"] or i["field_conflicts"] for i in selected):
+            result["_warnings"] = ["题录观测存在字段缺失或冲突；查看 field_regressions / field_conflicts，必要时显式选择 observation_id。未自动补全。"]
+        return result
 
     def corpus(self, project_id: str, snapshot_id: str | None):
         project = self.project(project_id)

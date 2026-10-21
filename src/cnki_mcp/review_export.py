@@ -4,7 +4,7 @@ import json
 import re
 from pathlib import Path
 
-from .citations import export_manifest, render_review
+from .citations import export_manifest, render_review_async
 from .core import digest, require, uid
 from .policy import protected_all
 from .review_workspace import ARTIFACT_KINDS
@@ -14,7 +14,7 @@ class ReviewExporter:
     def __init__(self, workspace, settings):
         self.workspace, self.settings, self.store = workspace, settings, workspace.store
 
-    def build(self, project_id, revision_ids=None, style="gbt-7714-2025"):
+    async def build(self, project_id, revision_ids=None, style="gbt-7714-2025"):
         sections = [self.workspace.get(project_id, r, "review_section") for r in revision_ids] if revision_ids is not None else self.workspace.heads(project_id, "review_section")
         require(len({s["entity_id"] for s in sections}) == len(sections), "INVALID_ARGUMENT", "一份正文不能同时采用同一章节的多个修订。")
         papers, known, requirements, bodies, issues = [], {}, [], [], []
@@ -41,7 +41,7 @@ class ReviewExporter:
         body = "\n\n".join(bodies)
         citation_ids = [v for v in re.findall(r"\[(version_[A-Za-z0-9_]+)\]", body) if v in known]
         style_path = self.settings.csl_styles.get(style, Path(__file__).parent / "styles" / f"{style}.csl")
-        rendered = render_review(papers, citation_ids, style_path)
+        rendered = await render_review_async(papers, citation_ids, style_path, self.settings.render_timeout_seconds)
         labels = iter(rendered["citations"])
         formatted = re.sub(r"\[(version_[A-Za-z0-9_]+)\]", lambda m: next(labels) if m[1] in known
                            else f"[待核查：{m[1]}]", body)

@@ -1,0 +1,130 @@
+{
+  "at": "2026-10-21T09:27:44.804299+00:00",
+  "schema": 4,
+  "python": "3.12.7",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "scope": "isolated_synthetic_only",
+  "store": [
+    {
+      "evidence_records": 500,
+      "matching_records": 10,
+      "legacy_reference": {
+        "samples": 12,
+        "median_ms": 2.715,
+        "p95_ms": 4.055,
+        "peak_python_bytes": 1056924
+      },
+      "indexed": {
+        "samples": 12,
+        "median_ms": 0.097,
+        "p95_ms": 0.339,
+        "peak_python_bytes": 24197
+      },
+      "results_identical": true,
+      "sql_queries_per_lookup": 1,
+      "rows_loaded_before": 500,
+      "rows_loaded_after": 10,
+      "query_plan": [
+        [
+          3,
+          0,
+          0,
+          "SEARCH records USING INDEX records_parse (kind=? AND <expr>=?)"
+        ]
+      ]
+    },
+    {
+      "evidence_records": 5000,
+      "matching_records": 10,
+      "legacy_reference": {
+        "samples": 12,
+        "median_ms": 56.099,
+        "p95_ms": 80.798,
+        "peak_python_bytes": 10602891
+      },
+      "indexed": {
+        "samples": 12,
+        "median_ms": 0.1,
+        "p95_ms": 0.454,
+        "peak_python_bytes": 24230
+      },
+      "results_identical": true,
+      "sql_queries_per_lookup": 1,
+      "rows_loaded_before": 5000,
+      "rows_loaded_after": 10,
+      "query_plan": [
+        [
+          3,
+          0,
+          0,
+          "SEARCH records USING INDEX records_parse (kind=? AND <expr>=?)"
+        ]
+      ]
+    },
+    {
+      "evidence_records": 20000,
+      "matching_records": 10,
+      "legacy_reference": {
+        "samples": 12,
+        "median_ms": 574.907,
+        "p95_ms": 703.703,
+        "peak_python_bytes": 42461630
+      },
+      "indexed": {
+        "samples": 12,
+        "median_ms": 0.116,
+        "p95_ms": 0.349,
+        "peak_python_bytes": 24263
+      },
+      "results_identical": true,
+      "sql_queries_per_lookup": 1,
+      "rows_loaded_before": 20000,
+      "rows_loaded_after": 10,
+      "query_plan": [
+        [
+          3,
+          0,
+          0,
+          "SEARCH records USING INDEX records_parse (kind=? AND <expr>=?)"
+        ]
+      ]
+    }
+  ],
+  "queue": [
+    {
+      "limit": 1,
+      "tasks": 12,
+      "peak_active": 1,
+      "elapsed_ms": 4784.86,
+      "peak_parent_python_bytes": 1269980,
+      "peak_worker_intervals": 1,
+      "sum_worker_peak_rss_upper_bound_bytes": 34398208,
+      "workload": "12_python_children_each_allocate_4MiB_and_wait_100ms"
+    },
+    {
+      "limit": 2,
+      "tasks": 12,
+      "peak_active": 2,
+      "elapsed_ms": 2340.883,
+      "peak_parent_python_bytes": 852157,
+      "peak_worker_intervals": 2,
+      "sum_worker_peak_rss_upper_bound_bytes": 68911104,
+      "workload": "12_python_children_each_allocate_4MiB_and_wait_100ms"
+    },
+    {
+      "limit": 4,
+      "tasks": 12,
+      "peak_active": 4,
+      "elapsed_ms": 1400.639,
+      "peak_parent_python_bytes": 876235,
+      "peak_worker_intervals": 4,
+      "sum_worker_peak_rss_upper_bound_bytes": 137641984,
+      "workload": "12_python_children_each_allocate_4MiB_and_wait_100ms"
+    }
+  ],
+  "limitations": [
+    "Linear reference and indexed lookup share the current schema/runtime; this is not a historical executable benchmark.",
+    "Query Python allocation peaks exclude SQLite/native memory; worker RSS sums use per-process peaks during overlapping workload intervals, not simultaneous OS sampling.",
+    "Synthetic workers measure concurrency enforcement, not an optimal PDF concurrency setting."
+  ]
+}

@@ -4,7 +4,7 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -135,6 +135,10 @@ class Settings(StrictModel):
     max_pdf_pages: int = Field(default=200, ge=1, le=2000)
     max_read_chars: int = Field(default=6000, ge=100, le=30000)
     parse_timeout_seconds: int = Field(default=300, ge=1, le=1800)
+    inspect_timeout_seconds: int = Field(default=30, ge=1, le=300)
+    render_timeout_seconds: int = Field(default=30, ge=1, le=300)
+    job_concurrency: dict[Literal["parse_fulltext", "acquire_fulltext", "prepare_review_v2", "prepare_synthesis"],
+                          Annotated[int, Field(ge=1, le=16)]] = Field(default_factory=lambda: {"parse_fulltext": 2})
     network_timeout_ms: int = Field(default=30000, ge=1000, le=120000)
     browser_headless: bool = False
     browser_channel: Literal["chromium", "msedge", "chrome"] = "chromium"

@@ -25,7 +25,7 @@
 | 计算机学报 | 6.781 | 3.802 | 自动化技术、计算机技术 1/145 | 自然科学版 PDF 128 页，印刷页 97 | 工科核心 |
 | 化学学报 | 1.976 | 1.429 | 化学 13/51 | 自然科学版 PDF 43 页，印刷页 12 | 中文写法对照 |
 
-原报告来自[北京理工大学学术期刊中心公开共享页](https://xsqk.bit.edu.cn/kfgx/11c98c91f43543cf9535eca81164f490.htm)，具体数值分别核对[社会科学版原报告](https://xsqk.bit.edu.cn/docs/2025-11/8a5d7bd0d69d46719a8918edae9bce1b.pdf)和[自然科学版原报告](https://xsqk.bit.edu.cn/docs/2025-11/84f61d85c2ce4581b71daba890dcd5c4.pdf)。相关页已渲染核对，[指标核验记录](../data/tmp/writing-study-metrics/verified-metrics-2024.json)保留下载地址和哈希。
+原报告来自[北京理工大学学术期刊中心公开共享页](https://xsqk.bit.edu.cn/kfgx/11c98c91f43543cf9535eca81164f490.htm)，具体数值分别核对[社会科学版原报告](https://xsqk.bit.edu.cn/docs/2025-11/8a5d7bd0d69d46719a8918edae9bce1b.pdf)和[自然科学版原报告](https://xsqk.bit.edu.cn/docs/2025-11/84f61d85c2ce4581b71daba890dcd5c4.pdf)。相关页已渲染核对，[指标核验记录](../data/references/writing-study-metrics/verified-metrics-2024.json)保留下载地址和哈希，原报告和页面图保存在同一目录。
 
 排名只在各自报告学科中解释，不按跨学科绝对数值比较写作质量。这里的“高影响”描述选样期刊，不能说明所选 2026 年论文已经高被引，也不能证明每个段落和推断都应作为范文。《化学学报》在本口径排名相对较低，因此单列对照。
 

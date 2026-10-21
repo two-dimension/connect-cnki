@@ -1,0 +1,10 @@
+{
+  "source": "Crossref REST content negotiation RIS exporter",
+  "source_url": "https://api.crossref.org/works/10.1002/j.1538-7305.1948.tb01338.x/transform/application/x-research-info-systems",
+  "documentation_url": "https://www.crossref.org/documentation/retrieve-metadata/content-negotiation/",
+  "retrieved_at": "2026-10-21T08:54:53.669134+00:00",
+  "sha256": "8cfbf9b041df119985d7cadb9ab6526ae8c760e1d470d8e2ef94706b21cb01b5",
+  "transformation": "none; response bytes preserved",
+  "contains_abstract_or_fulltext": false,
+  "scope": "External exporter compatibility fixture only; not an independent scientific-quality gold standard."
+}

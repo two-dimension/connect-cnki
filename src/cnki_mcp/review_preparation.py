@@ -5,6 +5,8 @@ import asyncio
 from .core import digest, require
 from .writing import WRITING_VERSION, writing_prompt
 
+PREPARATION_VERSION = "budgeted-excerpts-2026-10-21.1"
+
 
 class ReviewPreparation:
     """Resumable local material assembly; never runs an Agent or an external operation."""
@@ -27,6 +29,7 @@ class ReviewPreparation:
             "plan_id": plan["id"] if plan else None, "question": question or project["question"],
             "card_ids": [c["id"] for c in cards], "generation": project.get("review_generation", 0),
             "max_read_chars": self.settings.max_read_chars, "writing_rules_version": WRITING_VERSION}
+        arguments["preparation_version"] = PREPARATION_VERSION
         operation = "prepare_synthesis" if synthesis else "prepare_review_v2"
         return self.jobs.submit(operation, arguments, digest([operation, arguments]))
 
@@ -52,18 +55,23 @@ class ReviewPreparation:
                 observation_ids.append(item["observation_id"])
             cards = [self.store.get(c, "paper_card") for c in args["card_ids"]
                      if self.store.get(c, "paper_card")["content"]["version_id"] == version_id]
-            allocation = min(remaining, max(1200, remaining // (len(args["version_ids"]) - index))) if remaining else 0
+            allocation = remaining // (len(args["version_ids"]) - index) if remaining else 0
             result = self.evidence.search(project_id, args["question"], top_k=2, snapshot_id=snapshot["id"],
                 version_ids=[version_id], context_blocks=1, plan_id=args["plan_id"], max_chars=allocation,
-                record_progress=False) if allocation else {"results": [], "returned_chars": 0}
-            remaining -= result["returned_chars"]
+                record_progress=False, clip_hits=True) if allocation else {"results": [], "returned_chars": 0, "truncated": True,
+                    "version_status": {version_id: "budget_insufficient"}, "budget_insufficient": []}
+            remaining -= result.get("selected_chars", result["returned_chars"])
             for span in result["results"]:
                 delivered_ids.extend(span.get("evidence_ids", []))
             rows.append({"version_id": version_id, "bibliography": self.workspace.present_item(item)["bibliography"],
                 "reading_level": item["reading_level"], "quality": item["quality"],
                 "unavailable_pdf_pages": item.get("extraction_failed_pages", []),
                 "cards": [self.workspace.present(c) for c in cards], "evidence": result["results"],
-                "needs_agent_analysis": not bool(cards), "next_reading_required": not bool(result["results"]),
+                "evidence_status": result["version_status"][version_id],
+                "evidence_truncated": result["truncated"], "context_truncated": result.get("context_truncated", False),
+                "hit_truncated": result.get("hit_truncated", False),
+                "budget_insufficient": result["budget_insufficient"],
+                "needs_agent_analysis": not bool(cards), "next_reading_required": result["version_status"][version_id] != "returned",
                 "support_status": "not_assessed"})
             checkpoint = {"next_index": index + 1, "rows": rows, "remaining": remaining,
                           "evidence_ids": sorted(set(delivered_ids)), "observation_ids": sorted(set(observation_ids))}
@@ -78,7 +86,7 @@ class ReviewPreparation:
             "plan": self.workspace.present(self.store.get(args["plan_id"])) if args["plan_id"] else None,
             "uncovered_version_ids": [r["version_id"] for r in rows if r["next_reading_required"]],
             "instructions": writing_prompt(), "writing_rules_version": WRITING_VERSION,
-            "evidence_truncated": any(r["next_reading_required"] for r in rows),
+            "evidence_truncated": any(r.get("evidence_truncated", r["next_reading_required"]) for r in rows),
             "model_calls": 0, "support_status": "not_certified", "_evidence_ids": sorted(set(delivered_ids)),
             "_observation_ids": sorted(set(observation_ids))}
 
@@ -88,8 +96,16 @@ class ReviewPreparation:
             return
         if not self.workspace.project(job["arguments"]["project_id"]).get("review_assistance_enabled", False):
             return
-        ids = job["result"].get("_evidence_ids", [])
-        spans = [self.store.get(i, "evidence") for i in ids]
+        spans = []
+        for row in job["result"].get("matrix", []):
+            for block in row.get("evidence", []):
+                for source in block.get("source_ranges", []):
+                    original = self.store.get(source["evidence_id"], "evidence")
+                    start = source["offset"] - original["offset"]
+                    require(0 <= start and start + source["length"] <= len(original["text"]),
+                            "EVIDENCE_MISMATCH", "材料返回范围超出原始证据。")
+                    spans.append({**original, "offset": source["offset"],
+                                  "text": original["text"][start:start + source["length"]]})
         snapshot = self.workspace.corpus(job["arguments"]["project_id"], job["arguments"]["snapshot_id"])
         self.evidence.record_return(job["arguments"]["project_id"], snapshot, self.evidence.merged(spans))
         for observation_id in job["result"].get("_observation_ids", []):

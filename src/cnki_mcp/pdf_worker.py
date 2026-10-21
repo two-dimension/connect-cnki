@@ -7,9 +7,10 @@ from pathlib import Path
 
 from pypdf import errors as pdf_errors
 
+from .core import diagnostic_category
+from .parsing_identity import PIPELINE_VERSION
 from .pdf_validation import inspect_pdf
 
-PIPELINE_VERSION = "text-pdf-page-limits-2026-10-21.1"
 # Older supported readers do not expose this newer guard exception. An empty
 # exception tuple catches nothing and preserves their normal failure behavior.
 STREAM_LIMIT_ERROR = getattr(pdf_errors, "LimitReachedError", ())
@@ -48,5 +49,7 @@ if __name__ == "__main__":
     try:
         parse(Path(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3]),
               allow_partial_page_failures=sys.argv[4:] == ["--report-page-failures"])
-    except Exception:
+    except Exception as error:
+        Path(sys.argv[2]).write_text(json.dumps({"error": {"diagnostic_code": diagnostic_category(error),
+            "stage": "pdf_extraction"}}), encoding="utf-8")
         sys.exit(2)

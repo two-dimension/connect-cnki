@@ -5,6 +5,7 @@
 | 直接组件 | 用途 | 上游许可 |
 | --- | --- | --- |
 | modelcontextprotocol/python-sdk (`mcp`, 1.x 维护分支) | MCP stdio 协议 | MIT |
+| AnyIO | MCP 取消作用域内的子进程与暂存文件清理保护 | MIT |
 | Playwright Python | 专用临时浏览器上下文 | Apache-2.0 |
 | Pydantic | 输入和配置校验 | MIT |
 | Beautiful Soup | 脱敏页面题录解析 | MIT |

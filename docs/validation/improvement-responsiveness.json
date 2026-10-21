@@ -1,0 +1,27 @@
+{
+  "at": "2026-10-21T09:27:46.294730+00:00",
+  "scope": "application_tool_functions_with_controlled_30s_children",
+  "measurements": [
+    {
+      "operation": "pdf_inspection",
+      "status_query": "get_job",
+      "samples": 40,
+      "median_ms": 1.537,
+      "p95_ms": 2.975,
+      "max_ms": 4.733,
+      "cancelled_workers_reaped": true,
+      "temporary_files_cleaned": true
+    },
+    {
+      "operation": "csl_render",
+      "status_query": "get_job",
+      "samples": 40,
+      "median_ms": 1.677,
+      "p95_ms": 2.562,
+      "max_ms": 3.933,
+      "cancelled_workers_reaped": true,
+      "temporary_files_cleaned": true
+    }
+  ],
+  "limitations": "Excludes stdio transport and real PDF/CSL workload; no production latency SLO inferred."
+}

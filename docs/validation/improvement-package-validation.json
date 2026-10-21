@@ -1,0 +1,17 @@
+{
+  "wheel": "cnki_literature_mcp-0.2.1-py3-none-any.whl",
+  "sdist": "cnki_literature_mcp-0.2.1.tar.gz",
+  "required_assets": 10,
+  "archive_checks": "passed",
+  "wheel_matches_package_sources": true,
+  "package_source_sha256": "d0094ab7f9b2f90541234e671be0e6059fa9a523be3f4f1b3e667bc0a1b5d84c",
+  "wheel_sha256": "9b7978fdc5ab96c7e49ccc9667e000ce49903361b7076011b70796afbbcb3ab6",
+  "sdist_sha256": "01f10a83be0ba20a2b3618f278c7ca62347c7ed357362c038f8565ec2f1bf73d",
+  "clean_install": "passed",
+  "clean_source": {
+    "locked_install": "passed",
+    "ruff": "passed",
+    "stdio": "passed",
+    "non_browser_tests": "109 passed, 6 deselected in 70.12s (0:01:10)"
+  }
+}
