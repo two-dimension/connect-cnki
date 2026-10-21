@@ -197,6 +197,7 @@ class ReviewWorkspace:
                 "fulltext_rights": asset["rights"] if asset else {}, "asset_id": asset["id"] if asset else None,
                 "parse_artifact_id": artifact["id"] if artifact else None, "sha256": asset["sha256"] if asset else None,
                 "reading_level": level, "quality": artifact["quality"] if artifact else "not_parsed",
+                "extraction_failed_pages": artifact.get("extraction_failed_pages", []) if artifact else [],
                 "role": item.role, "subquestions": item.subquestions})
             dependencies.extend([paper["id"], observation["id"], *([asset["id"]] if asset else []), *([artifact["id"]] if artifact else [])])
         record = self.revision(project_id, "corpus_snapshot", {"items": selected, "plan_id": dependencies[0] if plan_id else None},
@@ -319,7 +320,8 @@ class ReviewWorkspace:
         return {"project_id": project_id, "enabled": project.get("review_assistance_enabled", False),
             "snapshot_id": snapshot["id"] if snapshot else None,
             "artifact_counts": {k: len(self.heads(project_id, k)) for k in sorted(ARTIFACT_KINDS)},
-            "materials": [{"version_id": i["version_id"], "reading_level": i["reading_level"], "quality": i["quality"]} for i in selected],
+            "materials": [{"version_id": i["version_id"], "reading_level": i["reading_level"], "quality": i["quality"],
+                           "unavailable_pdf_pages": i.get("extraction_failed_pages", [])} for i in selected],
             "missing_cards": [i["version_id"] for i in selected if i["version_id"] not in {c["content"]["version_id"] for c in current_cards}],
             "fields": [{"card_id": c["entity_id"], "version_id": c["content"]["version_id"],
                         "unknown": sum(f["value"] is None for f in c["content"]["fields"]),

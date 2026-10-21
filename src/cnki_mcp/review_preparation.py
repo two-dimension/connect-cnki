@@ -61,6 +61,7 @@ class ReviewPreparation:
                 delivered_ids.extend(span.get("evidence_ids", []))
             rows.append({"version_id": version_id, "bibliography": self.workspace.present_item(item)["bibliography"],
                 "reading_level": item["reading_level"], "quality": item["quality"],
+                "unavailable_pdf_pages": item.get("extraction_failed_pages", []),
                 "cards": [self.workspace.present(c) for c in cards], "evidence": result["results"],
                 "needs_agent_analysis": not bool(cards), "next_reading_required": not bool(result["results"]),
                 "support_status": "not_assessed"})

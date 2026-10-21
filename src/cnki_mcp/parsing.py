@@ -95,6 +95,7 @@ class Documents:
                     "ASSET_INTEGRITY_FAILED", "原始文件已被修改。")
         process = await asyncio.create_subprocess_exec(
             sys.executable, "-m", "cnki_mcp.pdf_worker", str(source), str(output), str(self.settings.max_pdf_pages),
+            "--report-page-failures",
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
         )
         try:
@@ -111,15 +112,19 @@ class Documents:
         finally:
             output.unlink(missing_ok=True)
         recovered = result["pdf_validation"] == "pdf_structural_review_required"
+        extraction_failures = result.get("extraction_failures", [])
+        failed_pages = [f["pdf_page"] for f in extraction_failures]
         quality = ("ocr_required" if result["scanned_pages"] else "structure_review_required" if recovered
-                   else "layout_review_required" if result["complex_pages"] else "text_extracted_unreviewed")
+                   else "layout_review_required" if result["complex_pages"] or failed_pages else "text_extracted_unreviewed")
         artifact = {
             "id": parse_id, "asset_id": asset["id"], "version_id": asset["version_id"], "sha256": asset["sha256"],
             "parser": "pypdf", "parser_version": pypdf_version, "profile": profile, "at": now(),
+            "pipeline_version": result.get("pipeline_version", "legacy_text_pdf_v1"),
             "quality": quality, "scanned_pages": result["scanned_pages"], "complex_pages": result["complex_pages"],
             "page_count": len(result["pages"]),
             "pdf_validation": result["pdf_validation"], "pdf_structure_warning_count": result["pdf_structure_warning_count"],
             "pdf_encryption": result.get("pdf_encryption", "unknown"),
+            "extraction_failed_pages": failed_pages, "extraction_failures": extraction_failures,
         }
         with self.store.transaction():
             self.store.put("parse", artifact)
@@ -139,9 +144,12 @@ class Documents:
                 "reading_level": "fulltext" if any(e["text"].strip() for e in self.store.all("evidence")
                                                      if e["parse_artifact_id"] == parse_id) else "metadata_only",
                 "pdf_validation": result["pdf_validation"],
-                "_job_state": "partially_succeeded" if result["scanned_pages"] or recovered else "succeeded",
+                "pipeline_version": result.get("pipeline_version", "legacy_text_pdf_v1"),
+                "extraction_failed_pages": failed_pages, "extraction_failures": extraction_failures,
+                "_job_state": "partially_succeeded" if result["scanned_pages"] or recovered or failed_pages else "succeeded",
                 "limitations": ["页码为 PDF 页序号；印刷页码、表格、公式和阅读顺序尚未人工核验。"]
-                               + (["源 PDF 含重复字典键，已兼容读取；结构与页面解释需要人工复核。"] if recovered else [])}
+                               + (["源 PDF 含重复字典键，已兼容读取；结构与页面解释需要人工复核。"] if recovered else [])
+                               + (["部分页触及内容流安全上限，未生成该页证据；见 extraction_failed_pages，需人工查看原页。"] if failed_pages else [])}
 
     def span(self, evidence: dict):
         return {key: protected(value, "fulltext", evidence["rights"]) if key == "text" else value

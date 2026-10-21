@@ -541,7 +541,9 @@ class Application:
         return {"version_id": version_id, "asset_id": artifact["asset_id"], "sha256": artifact["sha256"],
                 "parse_artifact_id": artifact["id"], "quality": artifact["quality"], "evidence": selected,
                 "truncated": len(selected) < len(spans), "reading_level": "fulltext" if selected else "metadata_only",
+                "unavailable_pdf_pages": sorted(set(pages).intersection(artifact.get("extraction_failed_pages", []))),
                 "needs_ocr_or_manual_review": bool(set(pages).intersection(artifact["scanned_pages"]))
+                                              or bool(set(pages).intersection(artifact.get("extraction_failed_pages", [])))
                                               or artifact["quality"] in {"structure_review_required", "layout_review_required"}}
 
     @endpoint

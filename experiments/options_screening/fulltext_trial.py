@@ -26,8 +26,9 @@ def write(path, value):
 
 
 class Controller:
-    def __init__(self, root):
+    def __init__(self, root, *, offline=False, resume_failed_parses=False):
         self.root, self.sequence, self.run_id = root, 0, uuid.uuid4().hex[:10]
+        self.offline, self.resume_failed_parses = offline, resume_failed_parses
         self.state_path = root / "fulltext-controller-state.json"
         self.manifest_path = root / "fulltext-manifest.json"
         self.manifest = read(self.manifest_path) if self.manifest_path.exists() else {}
@@ -88,27 +89,36 @@ class Controller:
         for version_id in order:
             if version_id in self.manifest and self.manifest[version_id].get("parse"):
                 continue
-            self.state_update(version_id=version_id, phase="restore_normal_entry")
+            self.state_update(version_id=version_id, phase="locate_cached_asset")
             paper = snapshot["papers"][version_id]
-            query = self.call("search_papers", {"project_id": ctx["project_id"], "session_id": ctx["session_id"],
-                "query": {"text": paper["title"], "field": "title"}, "sort": "relevance", "limit": 1})
-            assert len(query["papers"]) == 1 and query["papers"][0]["id"] == version_id, "Recovered source identity differs"
-            self.state_update(phase="download", recovery_query_id=query["query_id"])
-            if version_id in existing_jobs:
-                submitted = self.call("resume_job", {"job_id": existing_jobs[version_id], "session_id": ctx["session_id"]})
+            if self.manifest.get(version_id, {}).get("asset"):
+                asset = self.manifest[version_id]["asset"]
             else:
-                submitted = self.call("acquire_fulltext", {"project_id": "project_5f9a351572274924ae5b9c3e2965870e",
-                    "session_id": ctx["session_id"], "version_id": version_id,
-                    "idempotency_key": "options-trial-pdf-" + version_id})
-            downloaded = self.wait_job(submitted["id"])
-            asset = downloaded["result"]
+                assert not self.offline, "Cached asset missing; offline run will not reopen the source"
+                self.state_update(phase="restore_normal_entry")
+                query = self.call("search_papers", {"project_id": ctx["project_id"], "session_id": ctx["session_id"],
+                    "query": {"text": paper["title"], "field": "title"}, "sort": "relevance", "limit": 1})
+                assert len(query["papers"]) == 1 and query["papers"][0]["id"] == version_id, "Recovered source identity differs"
+                self.state_update(phase="download", recovery_query_id=query["query_id"])
+                if version_id in existing_jobs:
+                    submitted = self.call("resume_job", {"job_id": existing_jobs[version_id], "session_id": ctx["session_id"]})
+                else:
+                    submitted = self.call("acquire_fulltext", {"project_id": "project_5f9a351572274924ae5b9c3e2965870e",
+                        "session_id": ctx["session_id"], "version_id": version_id,
+                        "idempotency_key": "options-trial-pdf-" + version_id})
+                downloaded = self.wait_job(submitted["id"])
+                asset = downloaded["result"]
+                self.manifest[version_id] = {"title": paper["title"], "source_id": paper["source_id"],
+                    "download_job_id": submitted["id"], "download_state": downloaded["state"], "asset": asset,
+                    "recovery_query_id": query["query_id"]}
             assert asset["version_id"] == version_id
-            self.manifest[version_id] = {"title": paper["title"], "source_id": paper["source_id"],
-                "download_job_id": submitted["id"], "download_state": downloaded["state"], "asset": asset,
-                "recovery_query_id": query["query_id"]}
             write(self.manifest_path, self.manifest)
             self.state_update(phase="parse", asset_id=asset["id"])
             accepted = self.call("parse_fulltext", {"asset_id": asset["id"]})
+            if accepted["state"] in {"failed", "waiting_for_user"} and self.resume_failed_parses:
+                accepted = self.call("resume_job", {"job_id": accepted["id"]})
+            self.manifest[version_id]["parse_job_id"] = accepted["id"]
+            write(self.manifest_path, self.manifest)
             parsed = self.wait_job(accepted["id"])
             self.manifest[version_id].update(parse_job_id=accepted["id"], parse_state=parsed["state"], parse=parsed["result"])
             write(self.manifest_path, self.manifest)
@@ -122,8 +132,11 @@ class Controller:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runtime", type=Path, required=True)
+    parser.add_argument("--offline", action="store_true", help="Require already obtained assets; never reopen an online session.")
+    parser.add_argument("--resume-failed-parses", action="store_true", help="Explicitly resume cached failed parses after a verified parser fix.")
     args = parser.parse_args()
-    controller = Controller(args.runtime.resolve(strict=True))
+    controller = Controller(args.runtime.resolve(strict=True), offline=args.offline,
+                            resume_failed_parses=args.resume_failed_parses)
     try:
         controller.run()
     except (RuntimeError, AssertionError, TimeoutError, OSError) as error:

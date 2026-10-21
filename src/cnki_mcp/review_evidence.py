@@ -83,6 +83,7 @@ class ReviewEvidence:
         return {"snapshot_id": snapshot["id"], "version_id": version_id, "asset_id": item["asset_id"],
             "parse_artifact_id": item["parse_artifact_id"], "sha256": item["sha256"], "quality": artifact["quality"],
             "reading_level": item["reading_level"], "evidence": self.present_spans(merged), "returned_chars": used,
+            "unavailable_pdf_pages": sorted(set(pages).intersection(artifact.get("extraction_failed_pages", []))),
             "truncated": next_offset < len(spans), "next_evidence_offset": next_offset if next_offset < len(spans) else None,
             "budget_too_small": next_offset == evidence_offset and next_offset < len(spans),
             "needs_ocr_or_manual_review": artifact["quality"] != "text_extracted_unreviewed"}
@@ -172,6 +173,8 @@ class ReviewEvidence:
             self.record_return(project_id, snapshot, merged)
         covered = {s["version_id"] for s in merged} | {r["version_id"] for r in abstracts}
         return {"snapshot_id": snapshot["id"], "results": self.present_spans(merged) + abstracts,
+            "unavailable_pdf_pages": {i["version_id"]: i["extraction_failed_pages"] for i in items
+                                      if i.get("extraction_failed_pages")},
             "method": "literal_words_chinese_bigrams_plan_synonyms_v1", "semantic_search": "not_enabled",
             "truncated": truncated, "returned_chars": used,
             "uncovered_version_ids": [i["version_id"] for i in items if i["version_id"] not in covered],
