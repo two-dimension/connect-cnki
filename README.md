@@ -1,8 +1,8 @@
 # 知网文献 MCP
 
-供 Codex 等本地 MCP 客户端调用的学术文献服务。根据 [项目实施规格](docs/学术文献MCP项目实施规格.md) 实现，试点学校为厦门大学。研究问题与综合写作由 Codex 完成，本服务负责获取、保存、筛选、引文和可定位的证据，不额外调用另一个大模型。
+供 Codex 等本地 MCP 客户端调用的学术文献服务。根据 [项目实施规格](docs/学术文献MCP项目实施规格.md) 实现。研究问题与综合写作由 Codex 完成，本服务负责获取、保存、筛选、引文和可定位的证据，不额外调用另一个大模型。
 
-已实现 39 个工具、3 个资源入口和 3 个工作流提示：校内网/CARSI 专用会话、受控检索与游标、本地文献库、保守去重及回滚、五学科筛选、RIS/BibTeX/CSL JSON 导入导出、GB/T 7714—2025/2015 引文、PDF 证据与综述草稿检查、任务取消恢复。安装后可立即使用本地导入链路。厦大校内网机构识别已通过真实 MCP 调用，返回 `ready / 厦门大学`。用户已确认非商业个人科研范围的许可，本机已按此配置；真实文字查询、题录入库、缓存游标和单篇摘要已实测；相关度切换与两页 40 条真实翻页已验证；CARSI 人工登录返回后的机构核验也已通过；题名、关键词、作者、来源字段及三种排序已实测；年份/类型的显式候选筛选已实测；真实单篇三页 PDF 的正常下载、兼容解析与页码证据已实测，返回需结构复核的部分完成状态；来源端条件与独立质量验收集仍待完成。详情见 [验收状态](docs/验收状态.md)。
+已实现 39 个工具、3 个资源入口和 3 个工作流提示：校内网/CARSI 专用会话、受控检索与游标、本地文献库、保守去重及回滚、五学科筛选、RIS/BibTeX/CSL JSON 导入导出、GB/T 7714—2025/2015 引文、PDF 证据与综述草稿检查、任务取消恢复。安装后可立即使用本地导入链路。工程验证范围、真实来源测试记录与未完成的验收项见 [验收状态](docs/验收状态.md)。
 
 ## 可选综述 V2
 
@@ -68,23 +68,23 @@ uv run cnki-mcp --config config.local.json
 
 ## 校内网使用
 
-学校档案是内部配置，不是登录表，也不存账号密码。厦大名称、官方 CARSI 地址及主机名单已由项目维护。电脑已在校内网时，直接选择 `institution_network`，无需先登录 VPN 或 CARSI。校内入口先打开知网官网加载机构组件，实际检索仍使用 KNS 入口。
+学校档案是内部配置，不是登录表，也不存账号密码。机构名称、CARSI 地址、主机名单和识别规则由机构档案配置，使用前需核对所选档案与实际入口。电脑已在校内网时，直接选择 `institution_network`，无需先登录 VPN 或 CARSI。校内入口先打开知网官网加载机构组件，实际检索仍使用 KNS 入口。
 
-典型工具顺序：
+典型工具顺序（将 `your_institution_id` 替换为 `list_institutions` 返回的实际机构标识）：
 
-1. `list_institutions` 查看档案，`create_project` 创建 `institution_id="xmu"` 的项目。
-2. `start_access_session(institution_id="xmu", mode="institution_network")` 打开专用浏览器。
+1. `list_institutions` 查看档案，`create_project` 创建 `institution_id="your_institution_id"` 的项目。
+2. `start_access_session(institution_id="your_institution_id", mode="institution_network")` 打开专用浏览器。
 3. 用户按页面需要完成验证码等交互后调用 `verify_access_session`；只在精确机构标签匹配时返回 `ready`。
 4. `search_papers` 提交主题、题名等受控查询；下一页复用完全相同的项目、会话和查询，并传入 `next_cursor`。
 5. `get_paper` 默认读本地；显式 `refresh=true` 和 `session_id` 才联网刷新摘要。
 6. `screen_papers` 筛选，`export_bibliography` 导出选定发表版本。
 
-厦大档案已固定实页确认的可见机构组件 `.ecp_header_unitName`，精确匹配“厦门大学”；隐藏登录面板不会阻止识别，隐藏机构名也不能作为认证依据。查询条件或排序控件未核验时返回 `UNSUPPORTED_*`，不会悄悄丢弃条件。入口页面变化返回 `SOURCE_LAYOUT_CHANGED`；频繁访问提示会暂停会话。
+机构核验使用档案中已确认的可见机构组件，隐藏机构名不能作为认证依据。查询条件或排序控件未核验时返回 `UNSUPPORTED_*`，不会悄悄丢弃条件。入口页面变化返回 `SOURCE_LAYOUT_CHANGED`；频繁访问提示会暂停会话。
 
 如需在接入 Codex 前确认真实浏览器状态，可以运行：
 
 ```powershell
-uv run cnki-mcp --config config.local.json --access-check xmu
+uv run cnki-mcp --config config.local.json --access-check your_institution_id
 ```
 
 它打开可见专用窗口，等待用户亲自处理网站安全验证；在终端输入 `verify` 核验机构、`inspect` 查看脱敏诊断、`reload` 重载本地配置、`reopen` 重开已配置入口、`close` 结束。`reload / reopen` 保留同一专用浏览器上下文，并要求重新核验机构；修改数据目录或浏览器类型仍需重启。诊断使用独立数据子目录，不影响已运行 MCP 的任务，不提交文献检索或下载；只列出主机和预期学校名的结构候选，不输出完整 URL、登录 DOM、密码或身份断言。候选节点必须由维护者确认其机构组件含义，不能自动作为认证成功依据。CARSI 可使用 `--mode carsi`。
@@ -92,7 +92,7 @@ uv run cnki-mcp --config config.local.json --access-check xmu
 真实 MCP 检索联调可运行：
 
 ```powershell
-uv run python scripts/pilot_mcp.py --query 大语言模型 --limit 3 --budget 20
+uv run python scripts/pilot_mcp.py --institution your_institution_id --query 大语言模型 --limit 3 --budget 20
 ```
 
 此入口使用官方 MCP 客户端启动 stdio 服务并保留同一会话。输入 `verify` 核验，`search` 提交检索，`next` 继续游标，`paper` 读取首条本地题录，`detail` 显式刷新其摘要，`inspect` 查看脱敏布局诊断，`close` 正常关闭。出现安全验证时在同一窗口亲自完成后再核验；可传 `--project-id` 复用已有联调项目。`download / job / parse / read` 可依次验证首条文献的正常下载、任务状态、PDF 解析与第一页证据（`read` 在此联调脚本只打印统计信息）。MCP 本身也支持 `get_access_status(inspect_page=true)`，默认状态查询仍不读取页面。
@@ -124,7 +124,7 @@ uv run python scripts/pilot_mcp.py --query 大语言模型 --limit 3 --budget 20
 
 - 对学校来源，五项操作分别为 `automated_search`、`metadata_collect`、`fulltext_download`、`local_parse_index`、`external_model_use`。状态分为 `allowed / denied / unknown`。
 - 维护者根据真实依据填写 `source`、`verified_by`、含时区的 `verified_at / expires_at` 和 `resource_types`；外部模型处理还需 `providers: ["openai"]`。不从“在校内网”自动推导上述权限。
-- 用户明确确认的非商业个人科研许可可设 `basis_type="user_confirmation"`、`permitted_purpose="personal_noncommercial_research"`，并将顶层 `usage_purpose` 设为同值。用户未指定到期日时 `expires_at` 保持空值，不编造日期；修改用途为商业或未说明时，该确认不适用。其他学校的示例配置仍保留未知状态，文档型许可继续要求有效期。
+- 用户明确确认的非商业个人科研许可可设 `basis_type="user_confirmation"`、`permitted_purpose="personal_noncommercial_research"`，并将顶层 `usage_purpose` 设为同值。用户未指定到期日时 `expires_at` 保持空值，不编造日期；修改用途为商业或未说明时，该确认不适用。学校示例配置仍保留未知状态，文档型许可继续要求有效期。
 - 对合法导入文件，`ImportRights` 明确 `basis`、`allow_local_parse` 和 `allowed_recipients`，例如 `local` 或确有授权的 `openai`。未明确授权时可以保存题录，内容保持屏蔽。
 - 不保存账号、密码、cookie、SAML 断言、登录截图或日常浏览器配置。会话不跨重启持久化；重启后须重新建立会话。
 
