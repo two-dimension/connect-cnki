@@ -5,11 +5,14 @@ import json
 import sys
 from pathlib import Path
 
-from pypdf.errors import LimitReachedError
+from pypdf import errors as pdf_errors
 
 from .pdf_validation import inspect_pdf
 
 PIPELINE_VERSION = "text-pdf-page-limits-2026-10-21.1"
+# Older supported readers do not expose this newer guard exception. An empty
+# exception tuple catches nothing and preserves their normal failure behavior.
+STREAM_LIMIT_ERROR = getattr(pdf_errors, "LimitReachedError", ())
 
 
 def parse(source: Path, destination: Path, max_pages: int, *, allow_partial_page_failures=False):
@@ -18,7 +21,7 @@ def parse(source: Path, destination: Path, max_pages: int, *, allow_partial_page
     for index, page in enumerate(reader.pages, 1):
         try:
             text = page.extract_text(extraction_mode="plain") or ""
-        except LimitReachedError as error:
+        except STREAM_LIMIT_ERROR as error:
             # Discard the entire failed content stream; never retry it with a
             # larger security budget. Other independent pages keep their limits.
             if not allow_partial_page_failures or str(error) != "Reached maximum number of tokens per stream.":
